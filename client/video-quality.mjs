@@ -1,13 +1,15 @@
 export const DEFAULT_VIDEO = { height: 'source', fps: 30, adaptive: true };
 export function videoOptions(value = {}) {
+  const fps = [15, 30, 45, 50, 60].includes(Number(value.fps)) ? Number(value.fps) : 30;
   return { height: [720,1080,1440,2160].includes(Number(value.height)) ? Number(value.height) : 'source',
-    fps: Number(value.fps) === 60 ? 60 : 30, adaptive: value.adaptive !== false,
+    fps, adaptive: value.adaptive !== false,
     ...(value.degradationPreference ? { degradationPreference: value.degradationPreference } : {}) };
 }
 export function baseBitrate(options) { return Math.round(4_000_000 * ((Number(options.height) || 1080) / 1080) ** 1.5 * (options.fps / 30)); }
 export function minBitrate(options = {}) {
   const height = Number(options.height) || 1080;
-  const fpsFactor = options.fps === 60 ? 1.5 : 1.0;
+  const fps = Number(options.fps) || 30;
+  const fpsFactor = 1.0 + (Math.max(30, fps) - 30) / 60;
   if (height <= 720) return Math.round(1_000_000 * fpsFactor);
   if (height <= 1080) return Math.round(1_800_000 * fpsFactor);
   if (height <= 1440) return Math.round(3_000_000 * fpsFactor);
@@ -75,7 +77,8 @@ export function adaptBudget(previous, sample, options) {
     next.good = 0;
     next.reason = '固定画质上限';
     if (next.framePressure >= 2) {
-      next.scale = Math.max(0.5, Number((previous.scale / 1.2).toFixed(2)));
+      const minScale = options.degradationPreference === 'maintain-resolution' ? 0.67 : 0.5;
+      next.scale = Math.max(minScale, Number((previous.scale / 1.2).toFixed(2)));
       next.framePressure = 0;
       next.reason = '编码帧率不足，降分辨率保流畅';
     } else if (activeSource && sample.fps >= options.fps * 0.9 && previous.scale < 1) {
@@ -160,7 +163,8 @@ export function adaptBudget(previous, sample, options) {
 
   next.bitrate = Math.round(Math.min(cap, next.bitrate));
   if (next.framePressure >= 2 && !cpu && !(sample.loss != null && sample.loss > 0.05) && !(sample.rtt != null && sample.rtt > 0.4)) {
-    next.scale = Math.max(0.5, Number((next.scale / 1.2).toFixed(2)));
+    const minScale = options.degradationPreference === 'maintain-resolution' ? 0.67 : 0.5;
+    next.scale = Math.max(minScale, Number((next.scale / 1.2).toFixed(2)));
     next.framePressure = 0;
     next.good = 0;
     next.reason = '编码帧率不足，降分辨率保流畅';

@@ -17,7 +17,7 @@ class NativeCaptureService {
     if (this.active) throw new Error('native capture already active');
     if (!selection || !SOURCE_ID.test(selection.id) || selection.kind !== 'screen' ||
         !selection.id.startsWith(`${selection.kind}:`)) throw new Error('invalid capture source');
-    if (![30, 60].includes(fps)) throw new Error('invalid capture frame rate');
+    if (![15, 30, 45, 50, 60].includes(fps)) throw new Error('invalid capture frame rate');
     if (![720, 1080, 1440, 2160].includes(height)) throw new Error('invalid capture height');
     if (typeof audio !== 'boolean') throw new Error('invalid capture audio option');
     const token = ++this.token;
@@ -28,7 +28,9 @@ class NativeCaptureService {
   }
 
   spawnChild(selection, { fps, height, audio }, token) {
-    const child = this.spawnProcess(this.helperPath, ['--source', selection.id, '--fps', String(fps), '--height', String(height), '--audio', audio ? '1' : '0'], {
+    const args = ['--source', selection.id, '--fps', String(fps), '--height', String(height), '--audio', audio ? '1' : '0'];
+    if (audio) args.push('--exclude-pid', String(process.pid));
+    const child = this.spawnProcess(this.helperPath, args, {
       cwd: require('node:path').resolve(this.helperPath, '../../..'),
       stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true
     });

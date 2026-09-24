@@ -22,3 +22,11 @@ test('ICE configuration excludes non Cloudflare relays and browser-blocked port'
   assert.equal(ice[0].urls.length, 2);
   assert.throws(() => allowedIceServers([{ urls: ['turn:evil.example:3478'] }]));
 });
+
+test('grant-share message validates target and permission boolean', () => {
+  assert.deepEqual(validateMessage({ type: 'grant-share', target: 'user123', canShare: true }), { type: 'grant-share', target: 'user123', canShare: true });
+  assert.deepEqual(validateMessage({ type: 'grant-share', target: 'user123', canShare: false }), { type: 'grant-share', target: 'user123', canShare: false });
+  assert.throws(() => validateMessage({ type: 'grant-share', target: 'x'.repeat(65), canShare: true }));
+  assert.throws(() => validateMessage({ type: 'grant-share', target: 'user123', canShare: 'yes' }));
+  assert.throws(() => validateMessage({ type: 'grant-share', canShare: true }));
+});

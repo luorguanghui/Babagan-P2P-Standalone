@@ -56,7 +56,7 @@ export class MeetingRoom {
   send(socket, data) { try { socket.send(JSON.stringify(data)); } catch { /* closure is processed by the runtime */ } }
   broadcast(data) { for (const socket of this.sockets()) this.send(socket, data); }
   roster() {
-    return Object.values(this.members).filter(m => this.socket(m.id)).map(({ id, name, host, muted, epoch }) => ({ id, name, host, muted, epoch }));
+    return Object.values(this.members).filter(m => this.socket(m.id)).map(({ id, name, host, muted, canShare, epoch }) => ({ id, name, host, muted, canShare: Boolean(canShare || host), epoch }));
   }
   async save() { await this.ctx.storage.put({ room: this.room, members: this.members }); }
   state() { return { type: 'roster', peers: this.roster(), sharer: this.room?.sharer || null }; }
@@ -140,7 +140,7 @@ export class MeetingRoom {
     } catch (error) { return failure(error.message || '请求失败'); }
   }
   addMember(name, host) {
-    const member = { id: randomId(), token: randomId() + randomId(), name, host, muted: false, expires: host ? (this.room?.expires || Date.now() + 86400000) : Date.now() + 1800000 };
+    const member = { id: randomId(), token: randomId() + randomId(), name, host, muted: false, canShare: Boolean(host), expires: host ? (this.room?.expires || Date.now() + 86400000) : Date.now() + 1800000 };
     this.members[member.id] = member;
     return member;
   }
@@ -190,7 +190,16 @@ export class MeetingRoom {
       }
       if (msg.type === 'end') { if (!member.host) throw new Error('仅主持人可结束会议'); await this.end(); return; }
       if (msg.type === 'leave') { await this.remove(member.id); return; }
+      if (msg.type === 'grant-share') {
+        if (!member.host) throw new Error('仅主持人可分配共享权限');
+        const target = this.members[msg.target];
+        if (target) {
+          target.canShare = Boolean(msg.canShare);
+          if (this.room.sharer === msg.target && !msg.canShare) this.room.sharer = null;
+        }
+      }
       if (msg.type === 'share-start') {
+        if (!member.host && !member.canShare) throw new Error('需主持人授权后方可共享屏幕');
         if (this.room.sharer && this.room.sharer !== member.id) throw new Error('已有成员正在共享');
         this.room.sharer = member.id;
       }

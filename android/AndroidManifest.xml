@@ -1,4 +1,4 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="cloud.babagan.meeting" android:versionCode="14" android:versionName="1.12">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="cloud.babagan.meeting" android:versionCode="15" android:versionName="1.13">
   <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="35" />
   <uses-permission android:name="android.permission.INTERNET" />
   <uses-permission android:name="android.permission.RECORD_AUDIO" />

@@ -66,3 +66,32 @@ test('participant automatically renews expiration via renew message and requests
   assert.equal(a.messages.at(-1).type, 'renewed');
   assert.ok(f.room.members[guest.id].expires > Date.now() + 1000000);
 });
+
+test('host can grant and revoke screen sharing permission for guest', async () => {
+  const f = await fixture();
+  const guest = await (await f.request('join', { name: 'Guest' })).json();
+  const a = f.connect(f.host), b = f.connect(guest);
+
+  // Guest initially cannot share without host permission
+  await f.room.webSocketMessage(b, JSON.stringify({ type: 'share-start' }));
+  assert.equal(b.messages.at(-1).type, 'error');
+  assert.match(b.messages.at(-1).message, /需主持人授权/);
+
+  // Non-host cannot grant sharing permission
+  await f.room.webSocketMessage(b, JSON.stringify({ type: 'grant-share', target: guest.id, canShare: true }));
+  assert.equal(b.messages.at(-1).type, 'error');
+  assert.match(b.messages.at(-1).message, /仅主持人/);
+
+  // Host grants sharing permission to guest
+  await f.room.webSocketMessage(a, JSON.stringify({ type: 'grant-share', target: guest.id, canShare: true }));
+  assert.equal(f.room.members[guest.id].canShare, true);
+
+  // Guest can now share successfully
+  await f.room.webSocketMessage(b, JSON.stringify({ type: 'share-start' }));
+  assert.equal(f.room.room.sharer, guest.id);
+
+  // Host revoking permission while guest is sharing stops the share
+  await f.room.webSocketMessage(a, JSON.stringify({ type: 'grant-share', target: guest.id, canShare: false }));
+  assert.equal(f.room.members[guest.id].canShare, false);
+  assert.equal(f.room.room.sharer, null);
+});

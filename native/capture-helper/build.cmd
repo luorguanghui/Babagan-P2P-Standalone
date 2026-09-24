@@ -16,7 +16,7 @@ pushd "%~dp0"
 if not exist build mkdir build
 lib /nologo /def:obs.def /machine:x64 /out:build\obs.lib
 if errorlevel 1 ( popd & exit /b %errorlevel% )
-cl /nologo /std:c++20 /EHsc /I . /I "%OBS_HEADERS%" main.cpp build\obs.lib user32.lib gdi32.lib dxgi.lib /link /out:build\babagan-capture.exe
+cl /nologo /std:c++20 /EHsc /I . /I "%OBS_HEADERS%" main.cpp build\obs.lib user32.lib gdi32.lib dxgi.lib ole32.lib mmdevapi.lib /link /out:build\babagan-capture.exe
 set "BUILD_STATUS=%errorlevel%"
 if %BUILD_STATUS% equ 0 (
   copy /y build\babagan-capture.exe ..\runtime\bin\64bit\babagan-capture.exe >nul

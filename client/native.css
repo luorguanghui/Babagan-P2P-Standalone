@@ -986,6 +986,47 @@ aside {
   border: 1px solid rgba(56, 189, 248, 0.35);
 }
 
+.peer-perm-badge {
+  font-size: 0.68rem;
+  padding: 0.1rem 0.35rem;
+  border-radius: var(--radius-sm);
+  font-weight: 600;
+  background: rgba(52, 211, 153, 0.18);
+  color: #34d399;
+  border: 1px solid rgba(52, 211, 153, 0.3);
+  margin-left: auto;
+}
+
+.peer-perm-btn {
+  font-size: 0.7rem;
+  padding: 0.15rem 0.45rem;
+  border-radius: var(--radius-sm);
+  font-weight: 500;
+  border: 1px solid rgba(56, 189, 248, 0.4);
+  background: rgba(56, 189, 248, 0.12);
+  color: #38bdf8;
+  cursor: pointer;
+  margin-left: auto;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.peer-perm-btn:hover {
+  background: rgba(56, 189, 248, 0.25);
+  border-color: #38bdf8;
+}
+
+.peer-perm-btn.granted {
+  border-color: rgba(244, 63, 94, 0.4);
+  background: rgba(244, 63, 94, 0.12);
+  color: #f43f5e;
+}
+
+.peer-perm-btn.granted:hover {
+  background: rgba(244, 63, 94, 0.25);
+  border-color: #f43f5e;
+}
+
 .peer-path {
   display: flex;
   align-items: center;

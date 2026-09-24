@@ -1,7 +1,13 @@
 #define NOMINMAX
+#define _WIN32_WINNT 0x0A00
 #include <obs.h>
 #include <windows.h>
 #include <dxgi.h>
+#include <mmdeviceapi.h>
+#include <audioclient.h>
+#include <audioclientactivationparams.h>
+#include <wrl/client.h>
+#include <wrl/implements.h>
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
@@ -10,8 +16,14 @@
 #include <string>
 #include <vector>
 #include <mutex>
+#include <thread>
+#include <algorithm>
 #include <fcntl.h>
 #include <io.h>
+
+#ifndef VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK
+#define VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK L"VAD\\Process_Loopback"
+#endif
 
 namespace {
 std::atomic<uint32_t> sequence{0};
@@ -182,12 +194,178 @@ void on_audio(void *, size_t, struct audio_data *data) {
   if (!data->data[0] || !data->frames) return;
   write_record(5, 48000, 2, data->timestamp / 1000, data->data[0], data->frames * 4);
 }
+
+class AudioActivationHandler : public Microsoft::WRL::RuntimeClass<
+    Microsoft::WRL::RuntimeClassFlags<Microsoft::WRL::ClassicCom>,
+    IActivateAudioInterfaceCompletionHandler> {
+public:
+  HANDLE event_handle = nullptr;
+  Microsoft::WRL::ComPtr<IAudioClient> audio_client;
+  HRESULT hr_result = E_FAIL;
+
+  AudioActivationHandler() {
+    event_handle = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+  }
+
+  ~AudioActivationHandler() {
+    if (event_handle) CloseHandle(event_handle);
+  }
+
+  STDMETHOD(ActivateCompleted)(IActivateAudioInterfaceAsyncOperation *op) override {
+    if (op) {
+      Microsoft::WRL::ComPtr<IUnknown> unk;
+      HRESULT hr = op->GetActivateResult(&hr_result, &unk);
+      if (SUCCEEDED(hr) && SUCCEEDED(hr_result) && unk) {
+        unk.As(&audio_client);
+      }
+    }
+    if (event_handle) SetEvent(event_handle);
+    return S_OK;
+  }
+};
+
+struct ProcessLoopbackCapture {
+  std::atomic<bool> running{false};
+  std::thread worker;
+  HANDLE stop_event = nullptr;
+  HANDLE sample_event = nullptr;
+  Microsoft::WRL::ComPtr<IAudioClient> client;
+  Microsoft::WRL::ComPtr<IAudioCaptureClient> capture;
+
+  void stop() {
+    if (running.exchange(false)) {
+      if (stop_event) SetEvent(stop_event);
+      if (sample_event) SetEvent(sample_event);
+      if (worker.joinable()) worker.join();
+      if (client) client->Stop();
+      if (sample_event) { CloseHandle(sample_event); sample_event = nullptr; }
+      if (stop_event) { CloseHandle(stop_event); stop_event = nullptr; }
+      capture.Reset();
+      client.Reset();
+    }
+  }
+
+  ~ProcessLoopbackCapture() { stop(); }
+};
+
+bool start_process_loopback(DWORD exclude_pid, ProcessLoopbackCapture &cap) {
+  AUDIOCLIENT_ACTIVATION_PARAMS params{};
+  params.ActivationType = AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK;
+  params.ProcessLoopbackParams.TargetProcessId = exclude_pid;
+  params.ProcessLoopbackParams.ProcessLoopbackMode = PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE;
+
+  PROPVARIANT activate_params{};
+  activate_params.vt = VT_BLOB;
+  activate_params.blob.cbSize = sizeof(params);
+  activate_params.blob.pBlobData = reinterpret_cast<BYTE *>(&params);
+
+  auto handler = Microsoft::WRL::Make<AudioActivationHandler>();
+  Microsoft::WRL::ComPtr<IActivateAudioInterfaceAsyncOperation> async_op;
+  HRESULT hr = ActivateAudioInterfaceAsync(
+      VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
+      __uuidof(IAudioClient),
+      &activate_params,
+      handler.Get(),
+      &async_op);
+  if (FAILED(hr)) return false;
+
+  WaitForSingleObject(handler->event_handle, 2000);
+  if (FAILED(handler->hr_result) || !handler->audio_client) return false;
+
+  cap.client = handler->audio_client;
+  WAVEFORMATEXTENSIBLE wfx{};
+  wfx.Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
+  wfx.Format.nChannels = 2;
+  wfx.Format.nSamplesPerSec = 48000;
+  wfx.Format.wBitsPerSample = 32;
+  wfx.Format.nBlockAlign = 2 * 32 / 8;
+  wfx.Format.nAvgBytesPerSec = 48000 * wfx.Format.nBlockAlign;
+  wfx.Format.cbSize = sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX);
+  wfx.Samples.wValidBitsPerSample = 32;
+  wfx.dwChannelMask = KSAUDIO_SPEAKER_STEREO;
+  wfx.SubFormat = KSDATAFORMAT_SUBTYPE_IEEE_FLOAT;
+
+  cap.sample_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+  cap.stop_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+
+  hr = cap.client->Initialize(
+      AUDCLNT_SHAREMODE_SHARED,
+      AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+      200000,
+      0,
+      reinterpret_cast<WAVEFORMATEX *>(&wfx),
+      nullptr);
+  if (FAILED(hr)) {
+    cap.stop();
+    return false;
+  }
+
+  cap.client->SetEventHandle(cap.sample_event);
+
+  hr = cap.client->GetService(__uuidof(IAudioCaptureClient), reinterpret_cast<void **>(cap.capture.GetAddressOf()));
+  if (FAILED(hr)) {
+    cap.stop();
+    return false;
+  }
+
+  hr = cap.client->Start();
+  if (FAILED(hr)) {
+    cap.stop();
+    return false;
+  }
+
+  cap.running.store(true, std::memory_order_release);
+  cap.worker = std::thread([&cap]() {
+    HANDLE events[2] = { cap.stop_event, cap.sample_event };
+    std::vector<int16_t> pcm_buf;
+    while (cap.running.load(std::memory_order_relaxed)) {
+      DWORD wait_res = WaitForMultipleObjects(2, events, FALSE, 50);
+      if (wait_res == WAIT_OBJECT_0) break;
+
+      BYTE *data = nullptr;
+      UINT32 frames = 0;
+      DWORD flags = 0;
+      UINT64 dev_pos = 0, qpc_pos = 0;
+
+      while (SUCCEEDED(cap.capture->GetBuffer(&data, &frames, &flags, &dev_pos, &qpc_pos)) && frames > 0) {
+        if (!pipe_broken.load(std::memory_order_relaxed)) {
+          const uint32_t samples = frames * 2;
+          if (pcm_buf.size() < samples) pcm_buf.resize(samples);
+
+          if (flags & AUDCLNT_BUFFERFLAGS_SILENT) {
+            std::memset(pcm_buf.data(), 0, samples * sizeof(int16_t));
+          } else {
+            const float *src = reinterpret_cast<const float *>(data);
+            for (uint32_t i = 0; i < samples; ++i) {
+              float val = src[i];
+              if (val > 1.0f) val = 1.0f;
+              else if (val < -1.0f) val = -1.0f;
+              pcm_buf[i] = static_cast<int16_t>(val * 32767.0f);
+            }
+          }
+          uint64_t timestamp_us = qpc_pos / 10;
+          if (timestamp_us == 0) {
+            LARGE_INTEGER qpc_now, freq;
+            QueryPerformanceCounter(&qpc_now);
+            QueryPerformanceFrequency(&freq);
+            timestamp_us = static_cast<uint64_t>(qpc_now.QuadPart * 1000000 / freq.QuadPart);
+          }
+          write_record(5, 48000, 2, timestamp_us, reinterpret_cast<const uint8_t *>(pcm_buf.data()), samples * sizeof(int16_t));
+        }
+        cap.capture->ReleaseBuffer(frames);
+      }
+    }
+  });
+
+  return true;
+}
 }
 
 int main(int argc, char **argv) {
   std::string source_id;
   int target_fps = 60, maximum_height = 1080, seconds = 0, system_audio = 0;
   int preferred_method = 0; // 0 = auto-adaptive (DXGI with WGC fallback), 1 = DXGI, 2 = WGC
+  int exclude_pid = 0;
   for (int i = 1; i + 1 < argc; i += 2) {
     const std::string flag = argv[i], value = argv[i + 1];
     if (flag == "--source") source_id = value;
@@ -196,13 +374,14 @@ int main(int argc, char **argv) {
     else if (flag == "--seconds") seconds = std::atoi(value.c_str());
     else if (flag == "--audio") system_audio = std::atoi(value.c_str());
     else if (flag == "--method") preferred_method = std::atoi(value.c_str());
+    else if (flag == "--exclude-pid") exclude_pid = std::atoi(value.c_str());
     else return 2;
   }
   unsigned monitor_index = 0, secondary = 0;
   if (std::sscanf(source_id.c_str(), "screen:%u:%u", &monitor_index, &secondary) != 2 ||
-      target_fps != 30 && target_fps != 60 || maximum_height < 360 || maximum_height > 2160 ||
+      target_fps < 15 || target_fps > 120 || maximum_height < 360 || maximum_height > 2160 ||
       seconds < 0 || seconds > 3600 || system_audio < 0 || system_audio > 1 ||
-      preferred_method < 0 || preferred_method > 2) {
+      preferred_method < 0 || preferred_method > 2 || exclude_pid < 0) {
     std::fprintf(stderr, "invalid native capture arguments\n");
     return 2;
   }
@@ -260,18 +439,30 @@ int main(int argc, char **argv) {
       !obs_init_module(module)) { obs_shutdown(); return 6; }
   obs_post_load_modules();
   obs_source_t *audio_source = nullptr;
+  ProcessLoopbackCapture proc_audio;
+  bool using_process_audio = false;
   if (system_audio) {
-    const std::string wasapi_module = root + "/obs-plugins/64bit/win-wasapi.dll";
-    const std::string wasapi_data = root + "/data/obs-plugins/win-wasapi";
-    obs_module_t *wasapi = nullptr;
-    if (obs_open_module(&wasapi, wasapi_module.c_str(), wasapi_data.c_str()) != MODULE_SUCCESS ||
-        !obs_init_module(wasapi)) { obs_shutdown(); return 10; }
-    obs_data_t *audio_settings = obs_data_create();
-    obs_data_set_string(audio_settings, "device_id", "default");
-    audio_source = obs_source_create("wasapi_output_capture", "system-sound", audio_settings, nullptr);
-    obs_data_release(audio_settings);
-    if (!audio_source) { obs_shutdown(); return 11; }
-    obs_set_output_source(1, audio_source);
+    if (exclude_pid > 0) {
+      using_process_audio = start_process_loopback(static_cast<DWORD>(exclude_pid), proc_audio);
+      if (using_process_audio) {
+        std::fprintf(stderr, "[babagan-capture] System audio loopback initialized with excluded PID %d\n", exclude_pid);
+      } else {
+        std::fprintf(stderr, "[babagan-capture] Process loopback failed, falling back to OBS WASAPI output capture\n");
+      }
+    }
+    if (!using_process_audio) {
+      const std::string wasapi_module = root + "/obs-plugins/64bit/win-wasapi.dll";
+      const std::string wasapi_data = root + "/data/obs-plugins/win-wasapi";
+      obs_module_t *wasapi = nullptr;
+      if (obs_open_module(&wasapi, wasapi_module.c_str(), wasapi_data.c_str()) != MODULE_SUCCESS ||
+          !obs_init_module(wasapi)) { obs_shutdown(); return 10; }
+      obs_data_t *audio_settings = obs_data_create();
+      obs_data_set_string(audio_settings, "device_id", "default");
+      audio_source = obs_source_create("wasapi_output_capture", "system-sound", audio_settings, nullptr);
+      obs_data_release(audio_settings);
+      if (!audio_source) { obs_shutdown(); return 11; }
+      obs_set_output_source(1, audio_source);
+    }
   }
   obs_data_t *settings = obs_data_create();
   obs_source_t *source = obs_source_create("monitor_capture", "screen-share", settings, nullptr);
@@ -305,7 +496,7 @@ int main(int argc, char **argv) {
   audio_conversion.samples_per_sec = 48000;
   audio_conversion.format = AUDIO_FORMAT_16BIT;
   audio_conversion.speakers = SPEAKERS_STEREO;
-  if (system_audio) obs_add_raw_audio_callback(0, &audio_conversion, on_audio, nullptr);
+  if (system_audio && !using_process_audio) obs_add_raw_audio_callback(0, &audio_conversion, on_audio, nullptr);
   int elapsed_ms = 0;
   bool resized = false;
   while (!pipe_broken.load(std::memory_order_relaxed) && (!seconds || elapsed_ms < seconds * 1000)) {
@@ -361,7 +552,10 @@ int main(int argc, char **argv) {
     }
   }
   obs_remove_raw_video_callback(on_frame, nullptr);
-  if (system_audio) obs_remove_raw_audio_callback(0, on_audio, nullptr);
+  if (system_audio) {
+    if (using_process_audio) proc_audio.stop();
+    else obs_remove_raw_audio_callback(0, on_audio, nullptr);
+  }
   obs_set_output_source(0, nullptr);
   if (audio_source) { obs_set_output_source(1, nullptr); obs_source_release(audio_source); }
   obs_source_release(source);

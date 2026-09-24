@@ -72,3 +72,31 @@ test('display mode change restarts helper without ending the shared track', () =
   service.stop();
   assert.equal(children[1].killCalls, 1);
 });
+
+test('supports 45 and 50 fps tiers and passes exclude-pid when audio is enabled', () => {
+  const child = fakeChild();
+  let spawnArgs;
+  const service = new NativeCaptureService({
+    helperPath: 'C:/helper/obs-capture.exe',
+    spawnProcess: (file, args) => { spawnArgs = args; return child; },
+    sendEvent: () => {}
+  });
+
+  service.start({ id: 'screen:0:0', kind: 'screen' }, { fps: 45, audio: true });
+  assert.ok(spawnArgs.includes('45'));
+  assert.ok(spawnArgs.includes('--exclude-pid'));
+  assert.ok(spawnArgs.includes(String(process.pid)));
+  service.stop();
+
+  const child2 = fakeChild();
+  let spawnArgs2;
+  const service2 = new NativeCaptureService({
+    helperPath: 'C:/helper/obs-capture.exe',
+    spawnProcess: (file, args) => { spawnArgs2 = args; return child2; },
+    sendEvent: () => {}
+  });
+  service2.start({ id: 'screen:0:0', kind: 'screen' }, { fps: 50, audio: false });
+  assert.ok(spawnArgs2.includes('50'));
+  assert.ok(!spawnArgs2.includes('--exclude-pid'));
+  service2.stop();
+});

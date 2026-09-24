@@ -4,7 +4,14 @@ Windows EXE 与 Android APK 都内置界面资源。语音与屏幕共享采用 
 
 Cloudflare Worker `babagan-p2p` 已部署到 `https://p2p.babagan.cloud`，用于入会、信令和短期 TURN 凭据。应用已内置该地址，可在“连接设置”修改。不需要自行运行服务器，但开会仍需要互联网和 Cloudflare 服务。
 
-此公开项目按 GPLv2 提供源码；Windows 包内的 OBS 及相关组件源码、构建来源与许可说明见 [THIRD_PARTY_SOURCES.md](THIRD_PARTY_SOURCES.md)。1.12 的 EXE/APK 和对应源码归档均放在 GitHub Release，旧版本安装包保留在本地 `releases` 目录。
+此公开项目按 GPLv2 提供源码；Windows 包内的 OBS 及相关组件源码、构建来源与许可说明见 [THIRD_PARTY_SOURCES.md](THIRD_PARTY_SOURCES.md)。1.13 的 EXE/APK 和对应源码归档均放在 GitHub Release，旧版本安装包保留在本地 `releases` 目录。
+
+## 1.13 帧率多档位适配、系统音频回声抑制与主持人屏幕共享授权
+
+针对显卡高负荷降级优化、系统音频共享混音回声及会议屏幕共享权限控制进行系统级升级：
+1. **多档位高帧率选择与自适应画质防雪崩**：扩充支持 30fps、45fps、50fps、60fps 档位；显卡高负载场景支持稳定选择 30/45/50fps 并匹配 `maintain-resolution` 策略与 67% 最低下限保护，杜绝 60fps 不满帧引起的 540p 恶性连环降解。
+2. **系统声音共享回声精准消除**：原生 C++ 采集助手引入 Windows 原生 WASAPI Process Loopback 进程树排除模式（`PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE`），自动注入 Electron 进程树 PID，硬件级滤除会议自身通话声音，彻底消除系统音频共享时的回声；同时对 Web 共享模式启用 WebRTC 回声消除约束。
+3. **主持人参会者屏幕共享权限管理**：新增房间级 `grant-share` 信令与状态同步，主持人可精细化授权/收回各参会者的屏幕共享权限；参会者端按权限动态置灰控制并给出友好状态提示；若共享中途被撤销可自愈停止并同步各端状态。
 
 ## 1.12 屏幕共享高帧率防掉帧与异常中断稳定性修复
 
@@ -51,8 +58,8 @@ Windows 增加“内置高帧率屏幕采集（实验）”，把精简 libobs �
 
 ## 使用
 
-1. Windows 10/11 x64：运行 `Babagan-P2P-1.12-Windows-x64.exe`，这是便携版，首次启动会解压运行文件。EXE 没有商业代码签名证书。
-2. Android 8.0 及以上：安装 `Babagan-P2P-1.12-Android.apk`，首次开麦时允许麦克风权限。APK 使用本机生成的发布密钥签名，依赖系统 Android WebView。1.0.5 及其后版本使用相同签名密钥，可覆盖升级。**当前目录内的 1.0.4 APK 使用另一签名证书，不能直接覆盖安装新版；请在会议结束后卸载 1.0.4，再安装 1.12，并重新填写名字等本地设置。**
+1. Windows 10/11 x64：运行 `Babagan-P2P-1.13-Windows-x64.exe`，这是便携版，首次启动会解压运行文件。EXE 没有商业代码签名证书。
+2. Android 8.0 及以上：安装 `Babagan-P2P-1.13-Android.apk`，首次开麦时允许麦克风权限。APK 使用本机生成的发布密钥签名，依赖系统 Android WebView。1.0.5 及其后版本使用相同签名密钥，可覆盖升级。**当前目录内的 1.0.4 APK 使用另一签名证书，不能直接覆盖安装新版；请在会议结束后卸载 1.0.4，再安装 1.13，并重新填写名字等本地设置。**
 3. 填写名字并“创建会议”，将“复制邀请”得到的链接发给其他人。对方在安装好的客户端粘贴邀请并加入。邀请链接不是网页会议入口。
 4. 每房最多 5 人。Windows 可选择共享屏幕/窗口或 OBS 虚拟摄像头；屏幕/窗口共享可选系统声音。Android 支持语音及观看，不支持发起屏幕共享。
 5. Android 当前应保持前台使用；切到后台会暂停麦克风，不承诺锁屏通话。语音默认开启回声消除。

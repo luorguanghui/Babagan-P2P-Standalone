@@ -196,3 +196,18 @@ test('idle screen with low outgoing traffic does not trigger false congestion or
   assert.equal(budget.bitrate, 8_000_000);
   assert.equal(budget.scale, 1);
 });
+
+test('extended fps tiers 45 and 50 are accepted and scale bitrate floors properly', () => {
+  assert.equal(videoOptions({ fps: 45 }).fps, 45);
+  assert.equal(videoOptions({ fps: 50 }).fps, 50);
+  assert.equal(videoOptions({ fps: 999 }).fps, 30);
+
+  const floor30 = minBitrate({ height: 1080, fps: 30 });
+  const floor45 = minBitrate({ height: 1080, fps: 45 });
+  const floor50 = minBitrate({ height: 1080, fps: 50 });
+  const floor60 = minBitrate({ height: 1080, fps: 60 });
+
+  assert.ok(floor45 > floor30);
+  assert.ok(floor50 > floor45);
+  assert.ok(floor60 > floor50);
+});

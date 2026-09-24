@@ -36,8 +36,9 @@ if ($('quality-controls')) $('quality-controls').hidden = isAndroid;
 let videoPreferences = videoOptions();
 try {
   const saved = JSON.parse(localStorage.getItem('p2p-video') || '{}');
-  const fps = Number(saved.fps) === 60 ? 60 : 30;
-  videoPreferences = videoOptions({ ...saved, degradationPreference: fps === 60 ? 'maintain-framerate' : 'maintain-resolution' });
+  const rawFps = Number(saved.fps);
+  const fps = [15, 30, 45, 50, 60].includes(rawFps) ? rawFps : 30;
+  videoPreferences = videoOptions({ ...saved, fps, degradationPreference: fps >= 60 ? (saved.degradationPreference || 'balanced') : 'maintain-resolution' });
 } catch { /* use defaults */ }
 if ($('quality')) $('quality').value = String(videoPreferences.height);
 if ($('fps')) $('fps').value = String(videoPreferences.fps);
@@ -87,14 +88,15 @@ function renderMetrics(metrics = []) {
 }
 
 async function changeQuality() {
-  const fps = Number($('fps').value) === 60 ? 60 : 30;
+  const rawFps = Number($('fps').value);
+  const fps = [15, 30, 45, 50, 60].includes(rawFps) ? rawFps : 30;
   videoPreferences = videoOptions({ height: $('quality').value, fps, adaptive: $('adaptive').checked,
-    degradationPreference: fps === 60 ? 'maintain-framerate' : 'maintain-resolution' });
+    degradationPreference: fps >= 60 ? 'balanced' : 'maintain-resolution' });
   localStorage.setItem('p2p-video', JSON.stringify(videoPreferences));
   if (display) {
     const videoTrack = display.getVideoTracks()[0];
     if (videoTrack) {
-      videoTrack.contentHint = (videoPreferences.fps === 60 || captureMode === 'native') ? 'motion' : 'detail';
+      videoTrack.contentHint = (videoPreferences.fps >= 60 || captureMode === 'native') ? 'motion' : 'detail';
       if (captureMode === 'screen') await videoTrack.applyConstraints({ frameRate: { ideal: videoPreferences.fps, max: videoPreferences.fps } });
     }
   }
@@ -276,7 +278,10 @@ function connect() {
           await mesh.setTrack(1, display.getVideoTracks()[0]);
           await mesh.setTrack(2, display.getAudioTracks()[0] || null);
         } else if (display && sharer !== session.id && !sharingPending) {
+          const myMember = roster.find(p => p.id === session.id);
+          const wasRevoked = myMember && !myMember.host && !myMember.canShare;
           await stopShare(false);
+          if (wasRevoked) status('主持人已收回屏幕共享权限。');
         }
         renderRoster();
         renderScreen();
@@ -361,6 +366,10 @@ function renderRoster() {
     closed: '已断开'
   };
 
+  const myMember = roster.find(p => p.id === session?.id);
+  const isHost = Boolean(myMember?.host);
+  const canCurrentUserShare = Boolean(myMember?.host || myMember?.canShare);
+
   for (const p of roster) {
     const li = document.createElement('li');
     li.className = 'peer-card';
@@ -381,6 +390,27 @@ function renderRoster() {
     nameSpan.className = 'peer-name';
     nameSpan.textContent = `${p.name}${p.id === session?.id ? '（你）' : ''}${p.host ? ' · 主持人' : ''}${p.muted ? ' · 静音' : ''}`;
     nameRow.append(nameSpan);
+
+    if (p.canShare && !p.host) {
+      const badge = document.createElement('span');
+      badge.className = 'peer-perm-badge';
+      badge.textContent = '可共享';
+      nameRow.append(badge);
+    }
+
+    if (isHost && p.id !== session?.id) {
+      const permBtn = document.createElement('button');
+      permBtn.type = 'button';
+      permBtn.className = `peer-perm-btn ${p.canShare ? 'granted' : ''}`;
+      permBtn.title = p.canShare ? '点击收回屏幕共享权限' : '点击授权屏幕共享权限';
+      permBtn.textContent = p.canShare ? '收回共享' : '授权共享';
+      permBtn.onclick = e => {
+        e.stopPropagation();
+        send({ type: 'grant-share', target: p.id, canShare: !p.canShare });
+      };
+      nameRow.append(permBtn);
+    }
+
     info.append(nameRow);
 
     const pathVal = paths.get(p.id);
@@ -393,7 +423,13 @@ function renderRoster() {
     li.append(avatar, info);
     $('peers').append(li);
   }
-  $('share').disabled = capturePending || Boolean(sharer && sharer !== session?.id);
+  if (!canCurrentUserShare && !display) {
+    $('share').disabled = true;
+    $('share').title = '需主持人授权后方可共享屏幕';
+  } else {
+    $('share').disabled = capturePending || Boolean(sharer && sharer !== session?.id);
+    $('share').title = '';
+  }
 }
 
 function renderScreen() {
@@ -509,6 +545,8 @@ async function startShare() {
   if (display) { await stopShare(); return; }
   if (capturePending) return;
   if (socket?.readyState !== WebSocket.OPEN || !mesh) throw new Error('请等待连接恢复');
+  const myMember = roster.find(p => p.id === session?.id);
+  if (!myMember?.host && !myMember?.canShare) throw new Error('需主持人授权后方可共享屏幕');
   const obs = $('share-source')?.value === 'obs';
   const native = $('share-source')?.value === 'native';
   const attempt = ++captureSequence, meeting = session, connectionGeneration = generation;
@@ -528,7 +566,14 @@ async function startShare() {
       ? await captureObsVirtualCamera(navigator.mediaDevices, videoPreferences.fps)
       : await navigator.mediaDevices.getDisplayMedia({
         video: { frameRate: { ideal: videoPreferences.fps } },
-        audio: $('system-audio').checked
+        audio: $('system-audio').checked ? {
+          echoCancellation: true,
+          autoGainControl: false,
+          noiseSuppression: false,
+          googEchoCancellation: true,
+          googAutoGainControl: false,
+          googNoiseSuppression: false
+        } : false
       }));
     if (attempt !== captureSequence || closed || session !== meeting || generation !== connectionGeneration || socket?.readyState !== WebSocket.OPEN) {
       nativeSession?.stop();
@@ -538,7 +583,7 @@ async function startShare() {
     nativeCapture = nativeSession;
     display = stream;
     captureMode = native ? 'native' : obs ? 'obs' : 'screen';
-    display.getVideoTracks()[0].contentHint = (videoPreferences.fps === 60 || captureMode === 'native') ? 'motion' : 'detail';
+    display.getVideoTracks()[0].contentHint = (videoPreferences.fps >= 60 || captureMode === 'native') ? 'motion' : 'detail';
     display.getVideoTracks()[0].onended = () => stopShare().catch(error);
     window.babaganDesktop?.captureStarted();
     sharingPending = true;

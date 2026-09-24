@@ -1,7 +1,7 @@
 {
   "name": "babagan-p2p-standalone",
-  "version": "1.0.12",
-  "displayVersion": "1.12",
+  "version": "1.0.13",
+  "displayVersion": "1.13",
   "description": "Babagan P2P meeting client with Cloudflare TURN",
   "author": "Babagan",
   "private": true,
@@ -34,6 +34,6 @@
     "files": ["desktop/**", "www/**", "package.json"],
     "extraResources": [{ "from": "native/runtime", "to": "native-capture", "filter": ["**/*", "!win-capture/**"] }],
     "win": { "target": "portable", "signAndEditExecutable": false },
-    "artifactName": "Babagan-P2P-1.12-Windows-x64.exe"
+    "artifactName": "Babagan-P2P-1.13-Windows-x64.exe"
   }
 }
