@@ -1,0 +1,39 @@
+{
+  "name": "babagan-p2p-standalone",
+  "version": "1.0.12",
+  "displayVersion": "1.12",
+  "description": "Babagan P2P meeting client with Cloudflare TURN",
+  "author": "Babagan",
+  "private": true,
+  "type": "module",
+  "main": "desktop/main.cjs",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "lint": "eslint client desktop scripts test worker",
+    "build": "node scripts/prepare.mjs",
+    "desktop": "electron .",
+    "package:win": "node scripts/build-windows.mjs",
+    "package:android": "powershell -ExecutionPolicy Bypass -File scripts/build-android.ps1",
+    "worker:dev": "wrangler dev --config worker/wrangler.jsonc",
+    "worker:deploy": "wrangler deploy --config worker/wrangler.jsonc"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "@playwright/test": "^1.62.1",
+    "electron": "^42.0.0",
+    "electron-builder": "26.0.12",
+    "electron-builder-squirrel-windows": "26.0.12",
+    "eslint": "^9.39.5",
+    "wrangler": "^4.0.0"
+  },
+  "build": {
+    "appId": "cloud.babagan.meeting",
+    "electronDist": "node_modules/electron/dist",
+    "productName": "Babagan P2P",
+    "directories": { "output": "releases" },
+    "files": ["desktop/**", "www/**", "package.json"],
+    "extraResources": [{ "from": "native/runtime", "to": "native-capture", "filter": ["**/*", "!win-capture/**"] }],
+    "win": { "target": "portable", "signAndEditExecutable": false },
+    "artifactName": "Babagan-P2P-1.12-Windows-x64.exe"
+  }
+}

@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src https: wss: http://127.0.0.1:* ws://127.0.0.1:* http://localhost:* ws://localhost:*; media-src 'self' blob:; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-src 'none'">
+  <title>Babagan P2P · 高性能独立会议</title>
+  <link rel="stylesheet" href="native.css">
+</head>
+<body>
+  <!-- Global App Header -->
+  <header class="app-bar">
+    <div class="brand-wrapper">
+      <div class="brand-icon">
+        <svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+      </div>
+      <strong class="app-brand">Babagan <span>P2P</span></strong>
+    </div>
+    <div class="app-bar-right">
+      <div class="conn-badge">
+        <span class="conn-dot" id="conn-dot"></span>
+        <span id="connection">独立客户端 · Windows / Android</span>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <!-- 1. Lobby Section (Join & Create) -->
+    <section id="lobby" class="task-page-shell">
+      <div class="task-page">
+        <!-- Left: Branding & Feature Introduction -->
+        <div class="task-context">
+          <div>
+            <p class="eyebrow">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+              轻量免部署 · 极速直连
+            </p>
+            <h1>让会议<br>直接发生。</h1>
+            <p class="lede">语音与屏幕共享优先设备间端到端直连，全球 Cloudflare TURN 智能中继兜底保障。</p>
+          </div>
+          <div class="task-context-content">
+            <div class="feature-pill">
+              <svg viewBox="0 0 24 24"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
+              <span>最多 5 人超低延迟语音通话</span>
+            </div>
+            <div class="feature-pill">
+              <svg viewBox="0 0 24 24"><path d="M20 18c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2H4c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2H0v2h24v-2h-4zM4 6h16v10H4V6z"/></svg>
+              <span>Windows 4K 动态高帧率屏幕共享</span>
+            </div>
+            <div class="feature-pill">
+              <svg viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/></svg>
+              <span>系统高清音频原声直传</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Right: Join / Create Forms -->
+        <div class="task-surface">
+          <div class="lobby-tabs">
+            <button type="button" class="lobby-tab active" id="tab-create">创建新会议</button>
+            <button type="button" class="lobby-tab" id="tab-join">加入已有会议</button>
+          </div>
+
+          <form id="join-form">
+            <label>
+              <span>你的称呼</span>
+              <div class="input-wrapper">
+                <svg class="input-icon" viewBox="0 0 24 24"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
+                <input id="name" type="text" maxlength="40" required autocomplete="nickname" placeholder="请输入你的姓名或昵称">
+              </div>
+            </label>
+
+            <label id="invitation-group" hidden>
+              <span>邀请链接或房间码</span>
+              <div class="input-wrapper">
+                <svg class="input-icon" viewBox="0 0 24 24"><path d="M3.9 12c0-1.71 1.39-3.1 3.1-3.1h4V7H7c-2.76 0-5 2.24-5 5s2.24 5 5 5h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1zM8 13h8v-2H8v2zm9-6h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1s-1.39 3.1-3.1 3.1h-4V17h4c2.76 0 5-2.24 5-5s-2.24-5-5-5z"/></svg>
+                <input id="invitation" type="text" placeholder="粘贴完整的邀请链接或 32 位房间码" autocomplete="off">
+              </div>
+            </label>
+
+            <label class="check">
+              <input type="checkbox" id="listen-only">
+              <span>仅收听模式（不申请麦克风权限）</span>
+            </label>
+
+            <div class="actions">
+              <button type="button" id="create" class="primary">
+                <svg viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+                创建会议
+              </button>
+              <button type="submit" id="join" class="primary" hidden>
+                <svg viewBox="0 0 24 24"><path d="M10 17l5-5-5-5v10z"/></svg>
+                加入会议
+              </button>
+            </div>
+
+            <!-- Advanced Connection Settings -->
+            <details id="settings">
+              <summary>
+                <span>高级网络与中继设置</span>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M7 10l5 5 5-5z"/></svg>
+              </summary>
+              <div class="details-content">
+                <label>
+                  <span>Cloudflare 信令与凭据服务地址</span>
+                  <div class="input-wrapper">
+                    <svg class="input-icon" viewBox="0 0 24 24"><path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z"/></svg>
+                    <input id="worker" type="url" placeholder="https://babagan-p2p.example.workers.dev" autocomplete="off">
+                  </div>
+                </label>
+                <label class="check">
+                  <input id="relay-only" type="checkbox">
+                  <span>强制仅使用 Cloudflare TURN 中继（用于网络排查）</span>
+                </label>
+              </div>
+            </details>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <!-- 2. Active Meeting Room View -->
+    <section id="room" hidden class="native-room">
+      <div class="room-heading">
+        <div class="room-title-area">
+          <h1 id="room-title">会议进行中</h1>
+          <div class="room-code-badge">
+            <span class="invite-text" id="invite-text"></span>
+            <button id="copy" type="button" class="secondary copy-btn" title="复制邀请链接">
+              <svg viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
+              <span>复制邀请</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Main Stage and Member Sidebar -->
+      <div class="workspace" id="workspace">
+        <!-- Center Stage -->
+        <div class="stage" id="stage">
+          <video id="screen" autoplay playsinline muted></video>
+          <canvas id="screen-hold" hidden aria-hidden="true"></canvas>
+
+          <!-- Floating Info on Screen -->
+          <div class="stage-top-bar" id="stage-top-bar" hidden>
+            <div class="stage-badge-group">
+              <span class="stage-label-pill" id="stage-sharer-pill">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M20 18c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2H4c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2H0v2h24v-2h-4zM4 6h16v10H4V6z"/></svg>
+                <span id="screen-label"></span>
+              </span>
+              <span class="stage-path-badge p2p" id="stage-path-badge">
+                <span id="stage-path-text">⚡ P2P 直连</span>
+              </span>
+            </div>
+            <div class="stage-actions">
+              <button type="button" id="stage-fullscreen-btn" class="stage-btn" title="全屏观看 (F)">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>
+                <span>全屏</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Empty Stage Placeholder -->
+          <div id="empty">
+            <div class="empty-radar">
+              <svg viewBox="0 0 24 24"><path d="M20 18c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2H4c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2H0v2h24v-2h-4zM4 6h16v10H4V6z"/></svg>
+            </div>
+            <h2>等待屏幕共享</h2>
+            <p>目前没有参会者正在演示。您可以自由交流，或点击底部“共享屏幕”开始展示。</p>
+          </div>
+        </div>
+
+        <!-- Participants Sidebar -->
+        <aside>
+          <div class="aside-header">
+            <h2>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
+              参会成员
+            </h2>
+            <span class="count-pill" id="count">1 / 5</span>
+          </div>
+          <ul id="peers"></ul>
+          <p class="small sidebar-footer-note">连接标记来自实际 WebRTC 候选路径。</p>
+        </aside>
+      </div>
+
+      <!-- Quality and Codec Adjustments -->
+      <div class="quality-controls" id="quality-controls">
+        <label>
+          <span>共享来源</span>
+            <select id="share-source">
+              <option value="screen" selected>屏幕 / 窗口</option>
+              <option value="native">内置高帧率屏幕采集（实验）</option>
+              <option value="obs">OBS 虚拟摄像头</option>
+          </select>
+        </label>
+        <label>
+          <span>画质基准</span>
+          <select id="quality">
+            <option value="source" selected>原始分辨率</option>
+            <option value="720">720p（最高 1080p / 10 Mbps/人）</option>
+            <option value="1080">1080p（最高 1440p / 15 Mbps/人）</option>
+            <option value="1440">1440p（最高 2160p / 20 Mbps/人）</option>
+            <option value="2160">2160p / 4K（最高 30 Mbps/人）</option>
+          </select>
+        </label>
+        <label>
+          <span>目标帧率</span>
+          <select id="fps">
+            <option value="30" selected>30 fps</option>
+            <option value="60">60 fps</option>
+          </select>
+        </label>
+        <label class="check">
+          <input id="adaptive" type="checkbox" checked>
+          <span>自动上探与高清增强</span>
+        </label>
+        <span class="small" id="share-source-note">保持原始比例 · 优先帧率 · 共享中实时生效</span>
+      </div>
+
+      <!-- Floating Control Dock -->
+      <div class="controls-dock">
+        <div class="controls">
+          <button type="button" id="mic" class="ctrl-btn" title="麦克风开关">
+            <svg viewBox="0 0 24 24"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5-3c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
+            <span>开启麦克风</span>
+          </button>
+
+          <button type="button" id="share" class="ctrl-btn" title="屏幕共享">
+            <svg viewBox="0 0 24 24"><path d="M20 18c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2H4c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2H0v2h24v-2h-4zM4 6h16v10H4V6zm8 2l-4 4h3v3h2v-3h3l-4-4z"/></svg>
+            <span>共享屏幕</span>
+          </button>
+
+          <label class="check ctrl-btn" id="system-audio-label" title="是否共享电脑声音">
+            <input id="system-audio" type="checkbox">
+            <span class="dock-label">系统声音</span>
+          </label>
+
+          <button type="button" id="play" class="ctrl-btn secondary" title="激活音频播放">
+            <svg viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/></svg>
+            <span>播放声音</span>
+          </button>
+
+          <button type="button" id="fullscreen-btn" class="ctrl-btn secondary" title="全屏观看 (F)">
+            <svg viewBox="0 0 24 24"><path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>
+            <span>全屏</span>
+          </button>
+
+          <button type="button" id="retry" class="ctrl-btn secondary" title="网络重连">
+            <svg viewBox="0 0 24 24"><path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
+            <span>重新连接</span>
+          </button>
+
+          <button type="button" id="leave" class="ctrl-btn leave-btn" title="退出会议">
+            <svg viewBox="0 0 24 24"><path d="M10.09 15.59L11.5 17l5-5-5-5-1.41 1.41L12.67 11H3v2h9.67l-2.58 2.59zM19 3H5c-1.11 0-2 .9-2 2v4h2V5h14v14H5v-4H3v4c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2z"/></svg>
+            <span>离开</span>
+          </button>
+
+          <button type="button" id="end" class="ctrl-btn danger" hidden title="结束整场会议">
+            <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm5 11H7v-2h10v2z"/></svg>
+            <span>结束会议</span>
+          </button>
+        </div>
+      </div>
+
+      <p id="mobile-note" class="small" hidden>Android 支持语音和观看共享。请保持应用在前台；切换到后台会暂停麦克风。</p>
+    </section>
+
+    <!-- 3. Network Metrics Drawer -->
+    <section id="metrics" class="metrics">
+      <div class="metrics-header">
+        <strong>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M3.5 18.49l6-6.01 4 4L22 6.92l-1.41-1.41-7.09 7.97-4-4L2 16.99z"/></svg>
+          实时媒体传输与网络诊断
+        </strong>
+      </div>
+      <p id="metrics-total">未连接 · 上行 — · 下行 — · 帧率 —</p>
+      <div id="metrics-peers"></div>
+      <p class="small">速率为实际媒体传输统计，带宽为估计值；静态画面可能降低实际帧率。未开会时不进行测速。</p>
+    </section>
+
+    <!-- Global Floating Status Toast -->
+    <p id="status" role="status" aria-live="polite"></p>
+    <div id="audio-elements"></div>
+  </main>
+
+  <script type="module" src="app.mjs"></script>
+</body>
+</html>
