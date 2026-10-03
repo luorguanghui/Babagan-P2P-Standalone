@@ -2,6 +2,49 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createNativeVideoTrack } from '../client/native-capture-track.mjs';
 
+test('incoming frame dimensions notify quality changes even without a helper resize record', async () => {
+  const sizes = [];
+  const bridge = createNativeVideoTrack({ factory: {
+    createTrack: () => ({ stop() {} }), createFrame: () => ({ close() {} }), writeFrame: async () => {}
+  }, onStatus: record => sizes.push([record.width, record.height]) });
+  bridge.push({ type: 'frame', width: 1920, height: 1080, payload: new Uint8Array(12) });
+  await bridge.flush();
+  bridge.push({ type: 'frame', width: 1280, height: 720, payload: new Uint8Array(12) });
+  await bridge.flush();
+  bridge.push({ type: 'frame', width: 1280, height: 720, payload: new Uint8Array(12) });
+  await bridge.flush();
+  assert.deepEqual(sizes, [[1920, 1080], [1280, 720]]);
+  assert.equal(bridge.track.getSettings().height, 720);
+  bridge.stop();
+});
+
+test('native video hands off owned frame buffers instead of copying them again', async () => {
+  const originals = { generator: globalThis.MediaStreamTrackGenerator, frame: globalThis.VideoFrame };
+  let pixels;
+  globalThis.MediaStreamTrackGenerator = class {
+    writable = { getWriter: () => ({ write: async frame => { pixels = frame.pixels; }, close: async () => {} }) };
+    stop() {}
+  };
+  globalThis.VideoFrame = class {
+    constructor(data, options) {
+      this.pixels = globalThis.structuredClone(data, { transfer: options.transfer || [] });
+    }
+    close() {}
+  };
+  try {
+    const bridge = createNativeVideoTrack();
+    const payload = new Uint8Array(12); payload.fill(128);
+    bridge.push({ type: 'frame', width: 4, height: 2, timestampUs: 1000, payload });
+    await bridge.flush();
+    assert.equal(payload.buffer.byteLength, 0, 'frame ownership must be transferred');
+    assert.equal(pixels[0], 128, 'transferring ownership preserves the video pixels');
+    bridge.stop();
+  } finally {
+    globalThis.MediaStreamTrackGenerator = originals.generator;
+    globalThis.VideoFrame = originals.frame;
+  }
+});
+
 test('native track keeps only the newest two frames and releases old frame buffers', async () => {
   const written = [];
   const closed = [];
@@ -53,9 +96,9 @@ test('video writer failure stops the capture with a visible error status', async
   }, onStatus: event => events.push(event) });
   bridge.push({ type: 'frame', sequence: 1, width: 4, height: 2, timestampUs: 1000, payload: new Uint8Array(12) });
   await new Promise(resolve => setImmediate(resolve));
-  assert.equal(events[0]?.type, 'error');
-  assert.match(events[0]?.message, /writer failed/);
-  assert.equal(events[1], 'stop');
+  const error = events.find(event => event.type === 'error');
+  assert.match(error?.message, /writer failed/);
+  assert.equal(events.at(-1), 'stop');
 });
 
 test('track.getSettings reflects the dimensions of the received native frames', () => {

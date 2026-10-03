@@ -1241,8 +1241,16 @@ aside {
   font-weight: 500;
   box-shadow: var(--shadow-lg);
   z-index: 100;
-  pointer-events: none;
+  pointer-events: auto;
+  cursor: pointer;
+  user-select: none;
+  transition: opacity 0.2s ease, transform 0.2s ease;
   animation: slide-up 0.3s ease;
+}
+
+#status:hover {
+  opacity: 0.88;
+  transform: translateX(-50%) scale(0.98);
 }
 
 #status:empty {
@@ -1367,6 +1375,7 @@ aside {
   }
 
   .stage {
+    height: 35vh;
     min-height: 35vh;
   }
 

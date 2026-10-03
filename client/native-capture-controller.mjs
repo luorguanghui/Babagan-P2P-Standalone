@@ -36,6 +36,7 @@ export async function captureNativeScreen(desktop, options, {
       throw cause;
     }
     return { stream: new Stream([video.track, ...(audio ? [audio.track] : [])]), selection,
-      metrics: { video: video.metrics, audio: audio?.metrics }, stop };
+      metrics: { video: video.metrics, audio: audio?.metrics }, stop,
+      configure: preferences => active ? desktop.configureNativeCapture(preferences) : Promise.resolve() };
   } catch (error) { stop(); throw error; }
 }

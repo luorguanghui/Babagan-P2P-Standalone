@@ -95,3 +95,22 @@ test('host can grant and revoke screen sharing permission for guest', async () =
   assert.equal(f.room.members[guest.id].canShare, false);
   assert.equal(f.room.room.sharer, null);
 });
+
+test('share-start with sfu records sfu metadata in state and broadcasts it', async () => {
+  const f = await fixture();
+  const guest = await (await f.request('join', { name: 'Guest' })).json();
+  const a = f.connect(f.host), b = f.connect(guest);
+
+  const sfuPayload = { sessionId: 'sess-abc', videoTrackName: 'track-v1', audioTrackName: 'track-a1' };
+  await f.room.webSocketMessage(a, JSON.stringify({ type: 'share-start', sfu: sfuPayload }));
+  assert.equal(f.room.room.sharer, f.host.id);
+  assert.deepEqual(f.room.room.sfu, sfuPayload);
+
+  const broadcastState = b.messages.find(m => m.type === 'roster' && m.sharer === f.host.id);
+  assert.ok(broadcastState);
+  assert.deepEqual(broadcastState.sfu, sfuPayload);
+
+  await f.room.webSocketMessage(a, JSON.stringify({ type: 'share-stop' }));
+  assert.equal(f.room.room.sharer, null);
+  assert.equal(f.room.room.sfu, null);
+});

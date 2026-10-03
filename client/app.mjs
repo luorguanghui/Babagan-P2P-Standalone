@@ -5,19 +5,74 @@ import { describeEncoder } from './video-codec.mjs';
 import { captureObsVirtualCamera } from './obs-capture.mjs';
 import { AUDIO_CONSTRAINTS, setupNoiseGate } from './audio-processor.mjs';
 import { createStatus } from './status-message.mjs';
-import { reconcileSharePlayback } from './share-playback.mjs';
+import { reconcileSharePlayback, setSharePreviewVisibility } from './share-playback.mjs';
 import { createShareStageContinuity } from './share-stage-continuity.mjs';
+import { createSharePresence } from './share-presence.mjs';
 import { captureNativeScreen } from './native-capture-controller.mjs';
+import { createSfuPublisher, createSfuSubscriber } from './sfu-client.mjs';
+import { createSfuSubscriptionManager } from './sfu-subscription.mjs';
+import { createSfuStatsSampler, formatSfuVideoStats } from './sfu-stats.mjs';
 
 const $ = id => document.getElementById(id);
 const status = createStatus($('status'));
+if ($('status')) $('status').title = '点击关闭提示';
 const stageContinuity = createShareStageContinuity({ video: $('screen'), hold: $('screen-hold'),
   empty: $('empty'), topBar: $('stage-top-bar') });
-const error = e => status(e?.message || String(e));
+const error = e => status(e?.message || String(e), 5000);
 const isAndroid = /Android/i.test(navigator.userAgent);
 
 let session, socket, mesh, microphone, audioProcessor, display, captureMode, nativeCapture, shareTimeout, capturePending = false, captureSequence = 0, roster = [], sharer, ice, closed = true, reconnectTimer, heartbeat, statsTimer, attempts = 0, generation = 0;
 let muted = true, busy = false, sharingPending = false, resumedMuted = false;
+let sfuPublisher = null, sfuSubscriber = null, sfuSubscriberTrack = null, sfuSubscriberAudioTrack = null;
+let latestMeshMetrics = [], sfuVideoStats = null, sfuStatsPc = null;
+const sfuStatsSampler = createSfuStatsSampler();
+let previewVisible = true;
+function updatePreviewVisibility(visible) {
+  previewVisible = Boolean(visible);
+  stageContinuity.setSuspended(!previewVisible);
+  if (session) renderScreen();
+}
+window.babaganDesktop?.onPreviewVisibility?.(updatePreviewVisibility);
+// Native visibility takes precedence because Electron keeps this page active
+// for capture even when minimized. Browser clients use Page Visibility.
+if (!window.babaganDesktop?.onPreviewVisibility) {
+  document.addEventListener('visibilitychange', () => updatePreviewVisibility(!document.hidden));
+}
+const sharePresence = createSharePresence({ onExpire: lostId => {
+  if (closed || sharer !== lostId) return;
+  stageContinuity.hold();
+  sharer = null;
+  sfuSubscription.stop();
+  renderRoster();
+  renderScreen();
+  renderMetrics();
+} });
+const sfuSubscription = createSfuSubscriptionManager({
+  connect: ({ sfuInfo, onTrack }) => createSfuSubscriber({
+    sfuInfo,
+    workerUrl: $('worker').value,
+    onTrack,
+    onStatus: message => status(message, 3000)
+  }),
+  onTrack: (track, kind) => {
+    if (kind === 'video') sfuSubscriberTrack = track;
+    if (kind === 'audio') sfuSubscriberAudioTrack = track;
+    renderScreen();
+  },
+  onSubscriber: subscriber => {
+    sfuSubscriber = subscriber;
+    if (!subscriber) {
+      sfuSubscriberTrack = null;
+      sfuSubscriberAudioTrack = null;
+    }
+    renderScreen();
+    renderMetrics();
+  },
+  onError: cause => {
+    console.warn('SFU subscription retry:', cause);
+    status('SFU 视频暂未到达，正在重新订阅…', 5000);
+  }
+});
 const remote = new Map(), paths = new Map();
 
 // Local storage settings
@@ -32,13 +87,24 @@ if ($('share')) $('share').hidden = isAndroid;
 if ($('system-audio-label')) $('system-audio-label').hidden = isAndroid;
 if ($('mobile-note')) $('mobile-note').hidden = !isAndroid;
 if ($('quality-controls')) $('quality-controls').hidden = isAndroid;
+if ($('use-sfu')) {
+  $('use-sfu').checked = localStorage.getItem('p2p-use-sfu') === 'true';
+  $('use-sfu').onchange = () => {
+    localStorage.setItem('p2p-use-sfu', $('use-sfu').checked);
+    updateShareSource();
+  };
+}
+if ($('sfu-compat')) {
+  $('sfu-compat').checked = localStorage.getItem('p2p-sfu-compat') === 'true';
+  $('sfu-compat').onchange = () => localStorage.setItem('p2p-sfu-compat', $('sfu-compat').checked);
+}
 
 let videoPreferences = videoOptions();
 try {
   const saved = JSON.parse(localStorage.getItem('p2p-video') || '{}');
   const rawFps = Number(saved.fps);
   const fps = [15, 30, 45, 50, 60].includes(rawFps) ? rawFps : 30;
-  videoPreferences = videoOptions({ ...saved, fps, degradationPreference: fps >= 60 ? (saved.degradationPreference || 'balanced') : 'maintain-resolution' });
+  videoPreferences = videoOptions({ ...saved, fps, degradationPreference: 'maintain-resolution' });
 } catch { /* use defaults */ }
 if ($('quality')) $('quality').value = String(videoPreferences.height);
 if ($('fps')) $('fps').value = String(videoPreferences.fps);
@@ -69,9 +135,20 @@ function updateConnectionIndicator(text, mode = '') {
   if (dot) dot.className = `conn-dot ${mode}`;
 }
 
-function renderMetrics(metrics = []) {
+function renderMetrics(metrics = latestMeshMetrics) {
+  latestMeshMetrics = metrics;
   const mbps = value => value == null ? '—' : `${(value / 1e6).toFixed(2)} Mbps`;
   const fps = value => value == null ? '—' : `${value.toFixed(1)} fps`;
+  const activeSfuPc = sfuPublisher?.pc || sfuSubscriber?.pc;
+  if (activeSfuPc) {
+    const currentStats = sfuStatsPc === activeSfuPc ? sfuVideoStats : null;
+    const direction = sfuPublisher ? 'send' : 'receive';
+    $('metrics-total').textContent = `Cloudflare SFU · 视频${direction === 'send' ? '上行' : '下行'} ${mbps(currentStats?.bitrate)}`;
+    const line = document.createElement('p');
+    line.textContent = formatSfuVideoStats({ ...currentStats, direction });
+    $('metrics-peers').replaceChildren(line);
+    return;
+  }
   $('metrics-total').textContent = session
     ? `总上行 ${mbps(metrics.reduce((n, m) => n + m.outgoing, 0))} · 总下行 ${mbps(metrics.reduce((n, m) => n + m.incoming, 0))} · ${isAndroid ? '接收帧率由共享端和设备决定' : `目标 ${videoPreferences.height === 'source' ? '原始分辨率' : videoPreferences.height + 'p'} / ${videoPreferences.fps} fps`}`
     : '未连接 · 上行 — · 下行 — · 帧率 —';
@@ -91,16 +168,20 @@ async function changeQuality() {
   const rawFps = Number($('fps').value);
   const fps = [15, 30, 45, 50, 60].includes(rawFps) ? rawFps : 30;
   videoPreferences = videoOptions({ height: $('quality').value, fps, adaptive: $('adaptive').checked,
-    degradationPreference: fps >= 60 ? 'balanced' : 'maintain-resolution' });
+    degradationPreference: 'maintain-resolution' });
   localStorage.setItem('p2p-video', JSON.stringify(videoPreferences));
   if (display) {
     const videoTrack = display.getVideoTracks()[0];
     if (videoTrack) {
       videoTrack.contentHint = (videoPreferences.fps >= 60 || captureMode === 'native') ? 'motion' : 'detail';
       if (captureMode === 'screen') await videoTrack.applyConstraints({ frameRate: { ideal: videoPreferences.fps, max: videoPreferences.fps } });
+      if (captureMode === 'obs') await videoTrack.applyConstraints({ frameRate: { ideal: videoPreferences.fps, max: videoPreferences.fps } });
+      if (captureMode === 'native') await nativeCapture?.configure({ fps: videoPreferences.fps,
+        height: videoPreferences.height === 'source' ? 2160 : videoPreferences.height });
     }
   }
   await mesh?.configureVideo(videoPreferences);
+  await sfuPublisher?.configureVideo(videoPreferences);
 }
 for (const id of ['quality', 'fps', 'adaptive']) {
   if ($(id)) $(id).onchange = () => changeQuality().catch(error);
@@ -110,12 +191,16 @@ function updateShareSource() {
   const obs = $('share-source')?.value === 'obs';
   const native = $('share-source')?.value === 'native';
   if ($('share-source')) $('share-source').disabled = Boolean(display || capturePending);
+  if ($('use-sfu')) $('use-sfu').disabled = Boolean(display || capturePending);
+  if ($('sfu-compat')) $('sfu-compat').disabled = Boolean(display || capturePending || !$('use-sfu')?.checked);
   if ($('share')) $('share').disabled = capturePending || Boolean(sharer && sharer !== session?.id);
   if ($('system-audio')) {
     $('system-audio').disabled = obs;
     if (obs) $('system-audio').checked = false;
   }
   if ($('system-audio-label')) $('system-audio-label').hidden = isAndroid || obs;
+  if ($('sfu-label')) $('sfu-label').hidden = isAndroid;
+  if ($('sfu-compat-label')) $('sfu-compat-label').hidden = isAndroid || !$('use-sfu')?.checked;
   if ($('share-source-note')) $('share-source-note').textContent = obs
     ? '先在 OBS 启动虚拟摄像头；此来源仅传视频，麦克风仍使用会议设置。'
     : native ? '内置采集专为整屏高帧率优化（无需额外 OBS）；若需共享单个应用窗口请选择“屏幕 / 窗口”。'
@@ -184,7 +269,16 @@ async function start(create) {
     updateMicButton();
     updateConnectionIndicator('正在建立连接…', 'connecting');
     connect();
-    statsTimer = setInterval(() => mesh?.stats().catch(() => {}), 3000);
+    statsTimer = setInterval(() => {
+      mesh?.stats().catch(() => {});
+      const pc = sfuPublisher?.pc || sfuSubscriber?.pc || null;
+      void sfuStatsSampler.sample(pc).then(stats => {
+        if (pc !== (sfuPublisher?.pc || sfuSubscriber?.pc || null)) return;
+        sfuStatsPc = pc;
+        sfuVideoStats = stats;
+        renderMetrics();
+      }).catch(error => console.warn('SFU stats unavailable:', error));
+    }, 3000);
   } catch (e) {
     if (session) await api(roomPath('leave')).catch(() => {});
     if (audioProcessor) {
@@ -259,41 +353,62 @@ function connect() {
         send({ type: 'mute', muted });
         if (display && !closed) {
           sharingPending = true;
-          send({ type: 'share-start' });
+          send({ type: 'share-start', ...(sfuPublisher ? { sfu: sfuPublisher.sfuInfo } : {}) });
         }
         updateConnectionIndicator('已连接 · P2P / Cloudflare TURN', 'online');
         status('');
       }
       if (message.type === 'welcome' || message.type === 'roster') {
         roster = message.peers;
-        sharer = message.sharer;
+        const presence = sharePresence.update(message.sharer, roster);
+        sharer = presence.sharer;
+        if (presence.recovering && !sfuSubscriberTrack) stageContinuity.hold();
+        const sfuInfo = message.sfu;
         if (mesh) {
           for (const peer of roster) if (peer.id !== session.id) mesh.ensure(peer.id, peer.epoch);
           for (const id of mesh.peers.keys()) if (!roster.some(p => p.id === id)) { mesh.remove(id); removeRemote(id); }
         }
-        if (sharingPending && sharer === session.id && display) {
+        if (sharingPending && message.sharer === session.id && display) {
           sharingPending = false;
           clearTimeout(shareTimeout);
           shareTimeout = null;
-          await mesh.setTrack(1, display.getVideoTracks()[0]);
-          await mesh.setTrack(2, display.getAudioTracks()[0] || null);
-        } else if (display && sharer !== session.id && !sharingPending) {
+          if (!sfuPublisher) {
+            await mesh.setTrack(1, display.getVideoTracks()[0]);
+            await mesh.setTrack(2, display.getAudioTracks()[0] || null);
+          } else {
+            await mesh.setTrack(1, null);
+            await mesh.setTrack(2, null);
+          }
+        } else if (display && message.sharer !== session.id && !sharingPending && !presence.recovering) {
           const myMember = roster.find(p => p.id === session.id);
           const wasRevoked = myMember && !myMember.host && !myMember.canShare;
           await stopShare(false);
-          if (wasRevoked) status('主持人已收回屏幕共享权限。');
+          if (wasRevoked) status('主持人已收回屏幕共享权限。', 4000);
         }
+
+        // Subscriber handling for Cloudflare Calls SFU stream
+        if (sharer && sharer !== session?.id) {
+          if (sfuInfo) {
+            sfuSubscription.update(sfuInfo);
+          } else if (!presence.recovering) {
+            sfuSubscription.stop();
+          }
+        } else if (!sharer) {
+          sfuSubscription.stop();
+        }
+
         renderRoster();
         renderScreen();
+        renderMetrics();
       }
       if (message.type === 'signal') await mesh?.signal(message);
       if (message.type === 'error') {
         if (sharingPending) await stopShare(false);
-        status(message.message);
+        status(message.message, 5000);
       }
       if (message.type === 'ended') {
         await leave(false);
-        status('主持人已结束会议。');
+        status('主持人已结束会议。', 4000);
       }
     } catch (e) {
       error(e);
@@ -306,9 +421,9 @@ function connect() {
     clearInterval(heartbeat);
     if (closed) await stopShare(false);
     updateConnectionIndicator('信令已断开', '');
-    if (event.code === 1000 && event.reason === 'ended') { await leave(false); status('主持人已结束会议。'); return; }
-    if (event.code === 4000) { await leave(false); status('此入会身份已在另一连接打开。'); return; }
-    if (event.code === 4001) { await leave(false); status('连接已过期，请重新加入会议。'); return; }
+    if (event.code === 1000 && event.reason === 'ended') { await leave(false); status('主持人已结束会议。', 5000); return; }
+    if (event.code === 4000) { await leave(false); status('此入会身份已在另一连接打开。', 5000); return; }
+    if (event.code === 4001) { await leave(false); status('连接已过期，请重新加入会议。', 5000); return; }
     status('连接中断，正在自动重连…');
     reconnectTimer = setTimeout(async () => {
       try {
@@ -320,13 +435,13 @@ function connect() {
         }
         connect();
       } catch (e) {
-        if ([401, 410].includes(e.status)) { await leave(false); status(e.status === 410 ? '主持人已结束会议。' : '入会凭证已过期，请重新加入。'); }
+        if ([401, 410].includes(e.status)) { await leave(false); status(e.status === 410 ? '主持人已结束会议。' : '入会凭证已过期，请重新加入。', 5000); }
         else { error(e); connect(); }
       }
     }, Math.min(1000 * 2 ** Math.min(attempts++, 4), 6000));
   };
 
-  ws.onerror = () => status('信令暂时不可达，请检查网络和 Worker 地址。');
+  ws.onerror = () => status('信令暂时不可达，请检查网络和 Worker 地址。', 5000);
 }
 
 function receiveTrack(id, index, track) {
@@ -350,7 +465,7 @@ function receiveTrack(id, index, track) {
     renderScreen();
   } else {
     entry.audio.srcObject.addTrack(track);
-    entry.audio.play().catch(() => status('点击“播放声音”启用会议音频。'));
+    entry.audio.play().catch(() => status('点击“播放声音”启用会议音频。', 6000));
   }
 }
 
@@ -433,27 +548,35 @@ function renderRoster() {
 }
 
 function renderScreen() {
-  const track = sharer === session?.id ? display?.getVideoTracks()[0] : remote.get(sharer)?.video;
-  const systemAudio = sharer === session?.id ? null : remote.get(sharer)?.systemAudio;
+  const isLocal = sharer === session?.id;
+  const track = isLocal ? display?.getVideoTracks()[0] : (sfuSubscriberTrack || remote.get(sharer)?.video);
+  const systemAudio = isLocal ? null : (sfuSubscriberAudioTrack || remote.get(sharer)?.systemAudio);
   const video = $('screen');
 
   if (sharer) {
     stageContinuity.show();
 
     if (track && track.readyState === 'live') {
-      reconcileSharePlayback(video, track, systemAudio, sharer === session?.id);
-      video.play().catch(() => { if (systemAudio) status('点击“播放声音”启用会议音频。'); });
+      const attached = reconcileSharePlayback(video, track, systemAudio, isLocal, MediaStream, () => stageContinuity.hold());
+      const shouldPlay = setSharePreviewVisibility(video, isLocal, previewVisible);
+      if (shouldPlay && (attached || video.paused)) video.play().catch(() => { if (systemAudio) status('点击“播放声音”启用会议音频。', 6000); });
     }
 
     const sharerPeer = roster.find(p => p.id === sharer);
     const sharerName = sharerPeer?.name || '成员';
     $('screen-label').textContent = `${sharerName} 正在共享`;
 
-    const path = sharer === session?.id ? '本机' : paths.get(sharer);
+    const path = isLocal ? '本机' : paths.get(sharer);
     const pathBadge = $('stage-path-badge');
     const pathText = $('stage-path-text');
     if (pathBadge && pathText) {
-      if (path === 'Cloudflare TURN') {
+      if (isLocal && sfuPublisher) {
+        pathBadge.className = 'stage-path-badge turn';
+        pathText.textContent = '☁️ Cloudflare SFU 云端分发 (单路推流)';
+      } else if (!isLocal && sfuSubscriberTrack) {
+        pathBadge.className = 'stage-path-badge turn';
+        pathText.textContent = '☁️ Cloudflare SFU 云端分发';
+      } else if (path === 'Cloudflare TURN') {
         pathBadge.className = 'stage-path-badge turn';
         pathText.textContent = '☁️ Cloudflare TURN 中继';
       } else if (path === 'P2P 直连') {
@@ -560,12 +683,15 @@ async function startShare() {
     }, { onStatus: event => {
       if (event.type === 'error') { status(event.message || '内置采集意外停止，请重试或切换共享来源。'); stopShare().catch(error); }
       else if (event.type === 'ended') stopShare().catch(error);
-      else if (event.type === 'resized') mesh?.configureVideo(videoPreferences).catch(error);
+      else if (event.type === 'resized') {
+        mesh?.configureVideo(videoPreferences).catch(error);
+        sfuPublisher?.configureVideo(videoPreferences).catch(error);
+      }
     } }) : null;
     const stream = nativeSession?.stream || (obs
       ? await captureObsVirtualCamera(navigator.mediaDevices, videoPreferences.fps)
       : await navigator.mediaDevices.getDisplayMedia({
-        video: { frameRate: { ideal: videoPreferences.fps } },
+        video: { frameRate: { ideal: videoPreferences.fps, max: videoPreferences.fps } },
         audio: $('system-audio').checked ? {
           echoCancellation: true,
           autoGainControl: false,
@@ -586,14 +712,40 @@ async function startShare() {
     display.getVideoTracks()[0].contentHint = (videoPreferences.fps >= 60 || captureMode === 'native') ? 'motion' : 'detail';
     display.getVideoTracks()[0].onended = () => stopShare().catch(error);
     window.babaganDesktop?.captureStarted();
+
+    let sfu = null;
+    if ($('use-sfu')?.checked) {
+      status('正在初始化 Cloudflare SFU 云端推流…');
+      try {
+        sfuPublisher = await createSfuPublisher({
+          stream: display,
+          workerUrl: $('worker').value,
+          videoPreferences,
+          preferHardwareEncoding: !$('sfu-compat')?.checked,
+          onStatus: msg => status(msg, 3000),
+          onError: err => {
+            console.error('SFU Publisher error:', err);
+            error(err);
+          }
+        });
+        sfu = sfuPublisher.sfuInfo;
+        status('Cloudflare SFU 云端推流已就绪', 3000);
+        renderMetrics();
+      } catch (err) {
+        console.warn('SFU publish failed, falling back to P2P mesh:', err);
+        status('SFU 服务连接失败，已回退为 P2P Mesh 直连共享', 4000);
+        sfuPublisher = null;
+      }
+    }
+
     sharingPending = true;
-    send({ type: 'share-start' });
+    send({ type: 'share-start', ...(sfu ? { sfu } : {}) });
     clearTimeout(shareTimeout);
     const pendingDisplay = display;
     shareTimeout = setTimeout(() => {
       if (sharingPending && display === pendingDisplay) {
         stopShare().catch(error);
-        status('共享请求超时，请重试。');
+        status('共享请求超时，请重试。', 5000);
       }
     }, 8000);
   } catch (cause) {
@@ -613,6 +765,8 @@ async function stopShare(notify = true) {
   clearTimeout(shareTimeout);
   shareTimeout = null;
   sharingPending = false;
+  sfuPublisher?.stop();
+  sfuPublisher = null;
   const old = display;
   display = null;
   nativeCapture?.stop();
@@ -623,6 +777,7 @@ async function stopShare(notify = true) {
   await Promise.all([mesh?.setTrack(1, null), mesh?.setTrack(2, null)]).catch(() => {});
   if (notify && old) send({ type: 'share-stop' });
   renderScreen();
+  renderMetrics();
   updateShareSource();
 }
 
@@ -663,11 +818,15 @@ function clearRemote() {
 
 async function leave(notify = true) {
   closed = true;
+  sharePresence.stop();
   ++generation;
   clearTimeout(reconnectTimer);
   clearInterval(heartbeat);
   clearInterval(statsTimer);
   await stopShare(false);
+  sfuPublisher?.stop();
+  sfuPublisher = null;
+  sfuSubscription.stop();
   if (notify && session) {
     send({ type: 'leave' });
     api(roomPath('leave')).catch(() => {});
@@ -687,6 +846,10 @@ async function leave(notify = true) {
   session = null;
   roster = [];
   sharer = null;
+  latestMeshMetrics = [];
+  sfuVideoStats = null;
+  sfuStatsPc = null;
+  await sfuStatsSampler.sample(null);
   $('lobby').hidden = false;
   $('room').hidden = true;
   updateConnectionIndicator('独立客户端 · Windows / Android', '');
@@ -707,7 +870,7 @@ $('end').onclick = async () => {
   try {
     await api(roomPath('end'));
     await leave(false);
-    status('会议已结束。');
+    status('会议已结束。', 5000);
   } catch (e) {
     error(e);
   }
@@ -730,6 +893,7 @@ $('copy').onclick = async () => {
   }
 };
 $('play').onclick = () => {
+  status('');
   for (const { audio } of remote.values()) audio.play().catch(error);
   $('screen').play().catch(error);
 };

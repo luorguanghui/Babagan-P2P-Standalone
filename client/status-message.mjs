@@ -1,6 +1,14 @@
 export function createStatus(element, schedule = setTimeout, cancel = clearTimeout) {
   let timer;
   let revision = 0;
+  if (element && typeof element.addEventListener === 'function') {
+    element.addEventListener('click', () => {
+      ++revision;
+      if (timer != null) cancel(timer);
+      element.textContent = '';
+      timer = null;
+    });
+  }
   return (message, duration = 0) => {
     ++revision;
     if (timer != null) cancel(timer);

@@ -138,7 +138,7 @@
       <div class="workspace" id="workspace">
         <!-- Center Stage -->
         <div class="stage" id="stage">
-          <video id="screen" autoplay playsinline muted></video>
+          <video id="screen" autoplay playsinline muted poster="data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs="></video>
           <canvas id="screen-hold" hidden aria-hidden="true"></canvas>
 
           <!-- Floating Info on Screen -->
@@ -198,9 +198,9 @@
           <span>画质基准</span>
           <select id="quality">
             <option value="source" selected>原始分辨率</option>
-            <option value="720">720p（最高 1080p / 10 Mbps/人）</option>
-            <option value="1080">1080p（最高 1440p / 15 Mbps/人）</option>
-            <option value="1440">1440p（最高 2160p / 20 Mbps/人）</option>
+            <option value="720">720p（最高 10 Mbps/人）</option>
+            <option value="1080">1080p（最高 15 Mbps/人）</option>
+            <option value="1440">1440p（最高 20 Mbps/人）</option>
             <option value="2160">2160p / 4K（最高 30 Mbps/人）</option>
           </select>
         </label>
@@ -215,7 +215,15 @@
         </label>
         <label class="check">
           <input id="adaptive" type="checkbox" checked>
-          <span>自动上探与高清增强</span>
+          <span>自适应码率（保持分辨率）</span>
+        </label>
+        <label class="check" id="sfu-label" title="开启后共享端仅对云端编码 1 路视频由 Cloudflare SFU 进行分发，彻底减轻显卡与上传带宽压力">
+          <input id="use-sfu" type="checkbox">
+          <span>Cloudflare SFU 云端分发（单路编码减负）</span>
+        </label>
+        <label class="check" id="sfu-compat-label" title="开启兼容模式后将允许协商更多 H.264 档位和 VP8，但可能回退为 CPU 软件编码；未勾选时优先 Main 硬件编码，并保留 Baseline 协商回退">
+          <input id="sfu-compat" type="checkbox">
+          <span>SFU 兼容编码模式（遇解码问题时开启）</span>
         </label>
         <span class="small" id="share-source-note">保持原始比例 · 优先帧率 · 共享中实时生效</span>
       </div>
@@ -278,7 +286,7 @@
       </div>
       <p id="metrics-total">未连接 · 上行 — · 下行 — · 帧率 —</p>
       <div id="metrics-peers"></div>
-      <p class="small">速率为实际媒体传输统计，带宽为估计值；静态画面可能降低实际帧率。未开会时不进行测速。</p>
+      <p class="small">码率、帧率和丢包率来自 WebRTC 统计；静态画面可能降低实际帧率。SFU 丢包率仅覆盖本机与 SFU 间的链路。</p>
     </section>
 
     <!-- Global Floating Status Toast -->

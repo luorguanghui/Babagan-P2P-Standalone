@@ -4,6 +4,7 @@ import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.pm.PackageManager;
+import android.graphics.Bitmap;
 import android.os.Bundle;
 import android.view.View;
 import android.view.ViewGroup;
@@ -46,6 +47,9 @@ public class MainActivity extends Activity {
             }
         });
         web.setWebChromeClient(new WebChromeClient() {
+            @Override public Bitmap getDefaultVideoPoster() {
+                return Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888);
+            }
             @Override public void onPermissionRequest(PermissionRequest request) {
                 runOnUiThread(() -> {
                     if (!ORIGIN.equals(request.getOrigin().toString().replaceAll("/$", ""))) { request.deny(); return; }

@@ -4,7 +4,12 @@ function browserFactory() {
   return {
     createTrack: () => generator,
     createFrame: record => new globalThis.VideoFrame(record.payload, {
-      format: 'I420', codedWidth: record.width, codedHeight: record.height, timestamp: record.timestampUs
+      format: 'I420', codedWidth: record.width, codedHeight: record.height, timestamp: record.timestampUs,
+      // Each IPC frame owns its buffer. Hand it to WebCodecs instead of copying
+      // another 3 MiB at 1080p, or 12 MiB at 4K, on every captured frame.
+      transfer: record.payload.buffer instanceof ArrayBuffer && record.payload.byteOffset === 0 &&
+        record.payload.byteLength === record.payload.buffer.byteLength ? [record.payload.buffer] : [],
+      colorSpace: { primaries: 'bt709', transfer: 'bt709', matrix: 'bt709', fullRange: false }
     }),
     writeFrame: frame => writer.write(frame),
     close: () => writer.close().catch(() => {})
@@ -37,6 +42,7 @@ export function createNativeVideoTrack({ maxQueuedFrames = 4, factory = browserF
           const record = queue.shift();
           metrics.queued = queue.length;
           const frame = factory.createFrame(record);
+          record.payload = null;
           try {
             await factory.writeFrame(frame);
             metrics.written += 1;
@@ -63,10 +69,15 @@ export function createNativeVideoTrack({ maxQueuedFrames = 4, factory = browserF
         return;
       }
       if (record.type !== 'frame') return;
+      const resized = metrics.width !== record.width || metrics.height !== record.height;
       metrics.received += 1;
       metrics.width = record.width;
       metrics.height = record.height;
       metrics.lastTimestampUs = record.timestampUs;
+      // A restarted helper reports its size in frames without an explicit
+      // resize status. Notify after updating getSettings so SFU does not retain
+      // the scale calculated against the old capture dimensions.
+      if (resized) onStatus({ type: 'resized', width: record.width, height: record.height });
       while (queue.length >= maxQueuedFrames) discard(queue.shift());
       queue.push(record);
       metrics.queued = queue.length;

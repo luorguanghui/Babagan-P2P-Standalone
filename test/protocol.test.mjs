@@ -30,3 +30,21 @@ test('grant-share message validates target and permission boolean', () => {
   assert.throws(() => validateMessage({ type: 'grant-share', target: 'user123', canShare: 'yes' }));
   assert.throws(() => validateMessage({ type: 'grant-share', canShare: true }));
 });
+
+test('share-start message validates optional sfu payload', () => {
+  assert.deepEqual(validateMessage({ type: 'share-start' }), { type: 'share-start' });
+  assert.deepEqual(validateMessage({
+    type: 'share-start',
+    sfu: { sessionId: 'sess-123', videoTrackName: 'trk-vid', audioTrackName: 'trk-aud' }
+  }), {
+    type: 'share-start',
+    sfu: { sessionId: 'sess-123', videoTrackName: 'trk-vid', audioTrackName: 'trk-aud' }
+  });
+  assert.deepEqual(validateMessage({
+    type: 'share-start',
+    sfu: { sessionId: 'sess-123', videoTrackName: 'trk-vid' }
+  }), {
+    type: 'share-start',
+    sfu: { sessionId: 'sess-123', videoTrackName: 'trk-vid', audioTrackName: null }
+  });
+});

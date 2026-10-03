@@ -1,7 +1,7 @@
 import { validRoomId, cleanName, validateMessage, allowedIceServers } from './protocol.mjs';
 
 const randomId = () => [...crypto.getRandomValues(new Uint8Array(16))].map(n => n.toString(16).padStart(2, '0')).join('');
-const headers = { 'access-control-allow-origin': '*', 'access-control-allow-methods': 'GET, POST, OPTIONS', 'access-control-allow-headers': 'Content-Type, Authorization', 'cache-control': 'no-store', 'content-type': 'application/json' };
+const headers = { 'access-control-allow-origin': '*', 'access-control-allow-methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS', 'access-control-allow-headers': 'Content-Type, Authorization', 'cache-control': 'no-store', 'content-type': 'application/json' };
 const json = (data, status = 200) => new Response(JSON.stringify(data), { status, headers });
 const failure = (message, status = 400) => json({ error: message }, status);
 
@@ -9,6 +9,33 @@ export default {
   async fetch(request, env) {
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers });
     const url = new URL(request.url);
+
+    if (url.pathname.startsWith('/api/sfu/')) {
+      const callsAppId = env.CALLS_APP_ID;
+      const callsAppToken = env.CALLS_APP_TOKEN;
+      if (!callsAppId || !callsAppToken) return json({ errorDescription: "SFU 服务尚未配置" }, 503);
+      const subPath = url.pathname.replace(/^\/api\/sfu\//, '');
+      const targetUrl = `https://rtc.live.cloudflare.com/v1/apps/${callsAppId}/${subPath}`;
+      const rawBody = ['POST', 'PUT', 'PATCH'].includes(request.method) ? await request.text() : null;
+      const body = rawBody && rawBody.trim().length > 0 ? rawBody : undefined;
+      try {
+        const upstream = await fetch(targetUrl, {
+          method: request.method,
+          headers: {
+            ...(body ? { 'content-type': 'application/json' } : {}),
+            'authorization': `Bearer ${callsAppToken}`
+          },
+          body
+        });
+        const respText = await upstream.text();
+        return new Response(respText, {
+          status: upstream.status,
+          headers: { ...headers, 'content-type': 'application/json' }
+        });
+      } catch (e) {
+        return failure(e.message || 'SFU 代理通信失败', 502);
+      }
+    }
     // Consume small POST bodies before forwarding: workerd cannot proxy an
     // unread body after a Durable Object returns an early auth/ended response.
     if (request.method === 'POST') {
@@ -59,7 +86,7 @@ export class MeetingRoom {
     return Object.values(this.members).filter(m => this.socket(m.id)).map(({ id, name, host, muted, canShare, epoch }) => ({ id, name, host, muted, canShare: Boolean(canShare || host), epoch }));
   }
   async save() { await this.ctx.storage.put({ room: this.room, members: this.members }); }
-  state() { return { type: 'roster', peers: this.roster(), sharer: this.room?.sharer || null }; }
+  state() { return { type: 'roster', peers: this.roster(), sharer: this.room?.sharer || null, sfu: this.room?.sfu || null }; }
   prune() {
     for (const [id, m] of Object.entries(this.members)) {
       if (m.host) continue;
@@ -195,15 +222,22 @@ export class MeetingRoom {
         const target = this.members[msg.target];
         if (target) {
           target.canShare = Boolean(msg.canShare);
-          if (this.room.sharer === msg.target && !msg.canShare) this.room.sharer = null;
+          if (this.room.sharer === msg.target && !msg.canShare) {
+            this.room.sharer = null;
+            this.room.sfu = null;
+          }
         }
       }
       if (msg.type === 'share-start') {
         if (!member.host && !member.canShare) throw new Error('需主持人授权后方可共享屏幕');
         if (this.room.sharer && this.room.sharer !== member.id) throw new Error('已有成员正在共享');
         this.room.sharer = member.id;
+        this.room.sfu = msg.sfu || null;
       }
-      if (msg.type === 'share-stop' && this.room.sharer === member.id) this.room.sharer = null;
+      if (msg.type === 'share-stop' && this.room.sharer === member.id) {
+        this.room.sharer = null;
+        this.room.sfu = null;
+      }
       if (msg.type === 'mute') member.muted = msg.muted;
       await this.save();
       this.broadcast(this.state());
@@ -212,7 +246,10 @@ export class MeetingRoom {
   async remove(id) {
     const socket = this.socket(id);
     delete this.members[id];
-    if (this.room.sharer === id) this.room.sharer = null;
+    if (this.room.sharer === id) {
+      this.room.sharer = null;
+      this.room.sfu = null;
+    }
     await this.save();
     if (socket) socket.close(1000, 'left');
     this.broadcast(this.state());
@@ -221,7 +258,10 @@ export class MeetingRoom {
     const id = socket.deserializeAttachment()?.id;
     if (this.socket(id)) return; // A replacement connection already owns this identity.
     if (this.members[id] && !this.members[id].host) this.members[id].expires = Date.now() + 1800000;
-    if (this.room?.sharer === id) this.room.sharer = null;
+    if (this.room?.sharer === id) {
+      this.room.sharer = null;
+      this.room.sfu = null;
+    }
     await this.save();
     this.broadcast(this.state());
   }
@@ -229,6 +269,7 @@ export class MeetingRoom {
   async end() {
     this.room.ended = true;
     this.room.sharer = null;
+    this.room.sfu = null;
     this.members = {};
     await this.save();
     this.broadcast({ type: 'ended' });

@@ -17,6 +17,27 @@ function fakeChild() {
   return child;
 }
 
+test('changing quality reconfigures the capture helper and ignores old helper events', () => {
+  const children = [fakeChild(), fakeChild()];
+  const starts = [], events = [];
+  const service = new NativeCaptureService({ helperPath: 'C:/helper/obs-capture.exe',
+    spawnProcess: (file, args) => { starts.push(args); return children[starts.length - 1]; },
+    sendEvent: event => events.push(event) });
+  service.start({ id: 'screen:0:0', kind: 'screen' }, { fps: 60, height: 2160, audio: true });
+  assert.throws(() => service.configure({ fps: 999, height: 720 }), /frame rate/);
+  assert.equal(children[0].killCalls, 0, 'invalid options must preserve active capture');
+  service.configure({ fps: 30, height: 1080 });
+  assert.equal(children[0].killCalls, 1);
+  assert.equal(service.active, true);
+  assert.deepEqual(starts[1].slice(0, 8), ['--source', 'screen:0:0', '--fps', '30', '--height', '1080', '--audio', '1']);
+  assert.deepEqual(events, [], 'intentional restart must not end the shared track');
+  service.configure({ fps: 30, height: 1080 });
+  assert.equal(starts.length, 2, 'unchanged capture options must not restart');
+  children[0].emit('error', new Error('late error'));
+  assert.deepEqual(events, []);
+  service.stop();
+});
+
 test('starts a single helper, validates source selection and forwards frame records', async () => {
   const child = fakeChild();
   let spawnArguments;

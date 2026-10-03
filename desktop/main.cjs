@@ -59,6 +59,15 @@ app.whenReady().then(async () => {
   });
   win.webContents.setBackgroundThrottling(false);
   win.webContents.setFrameRate(60);
+  // Keep capture timers running, but stop the muted preview when another app
+  // (for example a game) owns the foreground. backgroundThrottling:false makes
+  // document.hidden unreliable, so report native window visibility explicitly.
+  const updatePreviewVisibility = () => {
+    if (!win.isDestroyed()) win.webContents.send('babagan:preview-visible',
+      win.isVisible() && !win.isMinimized() && win.isFocused());
+  };
+  for (const name of ['focus', 'blur', 'minimize', 'restore', 'show', 'hide']) win.on(name, updatePreviewVisibility);
+  win.webContents.on('did-finish-load', updatePreviewVisibility);
   const runtime = app.isPackaged ? path.join(process.resourcesPath, 'native-capture') : path.join(__dirname, '../native/runtime');
   const nativeHelper = path.join(runtime, 'bin/64bit/babagan-capture.exe');
   let nativeService = null, nativeGate = null, nativeEpoch = 0, nativeStarting = false;
@@ -86,6 +95,10 @@ app.whenReady().then(async () => {
     } finally { nativeStarting = false; }
   });
   ipcMain.on('babagan:native-ready', event => { if (authorizedNative(event)) nativeGate?.ready(); });
+  ipcMain.handle('babagan:native-configure', (event, options) => {
+    if (!authorizedNative(event)) throw new Error('Forbidden');
+    nativeService?.configure(options);
+  });
   ipcMain.on('babagan:native-stop', event => { if (authorizedNative(event)) stopNative(); });
   ipcMain.on('babagan:capture-started', event => { if (authorizedNative(event)) startSuspensionBlocker(); });
   ipcMain.on('babagan:capture-stopped', event => { if (authorizedNative(event)) stopSuspensionBlocker(); });
@@ -121,7 +134,7 @@ app.whenReady().then(async () => {
   });
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', (event, url) => { if (!local(url)) event.preventDefault(); });
-  win.on('closed', () => { stopSuspensionBlocker(); stopNative(); ipcMain.removeHandler('babagan:native-start'); });
+  win.on('closed', () => { stopSuspensionBlocker(); stopNative(); ipcMain.removeHandler('babagan:native-start'); ipcMain.removeHandler('babagan:native-configure'); });
   await win.loadURL('babagan://app/index.html');
 });
 app.on('window-all-closed', () => {

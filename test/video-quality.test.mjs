@@ -2,10 +2,31 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { videoOptions, baseBitrate, minBitrate, newBudget, adaptBudget, resolutionScale, evenResolutionScale, rate, videoSample, selectedCandidatePair, qualityLimits, equalEstimatedBandwidthShare } from '../client/video-quality.mjs';
 
-test('each selected quality tier has one-step resolution growth and a per-viewer bitrate ceiling', () => {
-  assert.deepEqual(qualityLimits({ height: 720 }), { maxHeight: 1080, maxBitrate: 10_000_000 });
-  assert.deepEqual(qualityLimits({ height: 1080 }), { maxHeight: 1440, maxBitrate: 15_000_000 });
-  assert.deepEqual(qualityLimits({ height: 1440 }), { maxHeight: 2160, maxBitrate: 20_000_000 });
+test('a stale low bandwidth estimate cannot trap the sender ceiling in a recovery loop', () => {
+  const options = videoOptions({ height: 1080, fps: 60 });
+  let budget = newBudget(options);
+  for (let index = 0; index < 30; index++) {
+    budget = adaptBudget(budget, { fps: 60, sourceFps: 60, available: 1_200_000,
+      outgoing: 900_000, loss: 0, rtt: 0.025, encodeMs: 2, limitation: 'bandwidth' }, options);
+    assert.equal(budget.bitrate, 15_000_000, 'GCC must retain room to probe beyond its stale estimate');
+    assert.equal(budget.scale, 1);
+  }
+});
+
+test('network and encoder pressure leave selected resolution to maintain-resolution', () => {
+  const options = videoOptions({ height: 1080, fps: 60 });
+  let budget = newBudget(options);
+  for (let index = 0; index < 30; index++) {
+    budget = adaptBudget(budget, { fps: 25, sourceFps: 60, loss: 0.08, rtt: 0.45,
+      encodeMs: 22, limitation: 'cpu' }, options);
+    assert.equal(budget.scale, 1, 'application must not fight browser adaptation by resizing');
+  }
+});
+
+test('each quality tier keeps selected resolution and a per-viewer bitrate ceiling', () => {
+  assert.deepEqual(qualityLimits({ height: 720 }), { maxHeight: 720, maxBitrate: 10_000_000 });
+  assert.deepEqual(qualityLimits({ height: 1080 }), { maxHeight: 1080, maxBitrate: 15_000_000 });
+  assert.deepEqual(qualityLimits({ height: 1440 }), { maxHeight: 1440, maxBitrate: 20_000_000 });
   assert.deepEqual(qualityLimits({ height: 2160 }), { maxHeight: 2160, maxBitrate: 30_000_000 });
   assert.deepEqual(qualityLimits({ height: 1440, sourceMode: true }), { maxHeight: 1440, maxBitrate: 20_000_000 });
 });
@@ -47,30 +68,25 @@ test('sender scaling keeps output dimensions even across common and adaptive siz
   }
   assert.equal(evenResolutionScale(2560, 1440, 1080), 4 / 3);
 });
-test('probe needs sustained frame rate and headroom; congestion backs off immediately', () => {
-  const o = videoOptions({fps:60}); let b = newBudget(o);
-  const good = {fps:60,loss:0,rtt:.05,available:40e6,limitation:'none',encodeMs:2};
-  for(let i=0;i<15;i++) b=adaptBudget(b,good,o);
-  assert.ok(b.bitrate > 8e6); assert.ok(b.scale > 1);
-  const reduced=adaptBudget(b,{...good,loss:.1},o);
-  assert.ok(reduced.bitrate < b.bitrate); assert.ok(reduced.scale < b.scale);
-  assert.equal(adaptBudget(b,{...good,limitation:'cpu'},o).good,0);
+test('browser congestion feedback never lowers the application ceiling or grows resolution', () => {
+  const options = videoOptions({height:1080,fps:60}); let budget = newBudget(options);
+  for (const sample of [{fps:60,loss:0,rtt:.05,available:40e6}, {fps:30,loss:.1,rtt:.5,limitation:'bandwidth'}, {limitation:'cpu'}]) {
+    budget = adaptBudget(budget,sample,options);
+    assert.equal(budget.bitrate,15e6); assert.equal(budget.scale,1);
+  }
 });
+
 test('missing stats and static content never trigger resolution boost', () => {
   const o=videoOptions(); let b=newBudget(o);
   for(let i=0;i<30;i++) b=adaptBudget(b,{fps:0,available:50e6,loss:null,rtt:null},o);
-  assert.equal(b.bitrate,4e6); assert.equal(b.scale,1);
+  assert.equal(b.bitrate,15e6); assert.equal(b.scale,1);
   assert.equal(rate({timestamp:2000,bytesSent:100},{timestamp:1000,bytesSent:200},'bytesSent'),null);
 });
 
-test('fixed quality ceiling backs down resolution when active 60 fps capture encodes near 30 fps', () => {
-  const options = videoOptions({ height: 1080, fps: 60, adaptive: false });
-  let budget = newBudget(options);
-  const pressure = { sourceFps: 59, fps: 30, available: 14_000_000, loss: 0, rtt: 0.02, limitation: 'cpu', encodeMs: 20 };
-  budget = adaptBudget(budget, pressure, options);
-  budget = adaptBudget(budget, pressure, options);
-  assert.ok(budget.scale < 1, `resolution did not back down: ${budget.scale}`);
-  assert.equal(budget.bitrate, baseBitrate(options));
+test('fixed quality preserves resolution when active capture encodes fewer frames', () => {
+  const options = videoOptions({height:1080,fps:60,adaptive:false}); let budget = newBudget(options);
+  for(let i=0;i<10;i++) budget=adaptBudget(budget,{sourceFps:60,fps:30,limitation:'cpu',encodeMs:20},options);
+  assert.equal(budget.scale,1); assert.equal(budget.bitrate,baseBitrate(options));
 });
 
 test('low fps from an unchanged screen does not trigger downscaling', () => {
@@ -80,19 +96,16 @@ test('low fps from an unchanged screen does not trigger downscaling', () => {
   assert.equal(budget.scale, 1);
 });
 
-test('dynamic video recovers bitrate when the browser estimate exceeds a low sender cap', () => {
-  const options = videoOptions({ height: 1080 });
-  let budget = newBudget(options);
-  const sample = { fps: 29.3, available: 1_300_000, limitation: 'bandwidth', loss: null, rtt: null, encodeMs: 2 };
-  for (let i = 0; i < 12; i++) budget = adaptBudget(budget, sample, options);
-  assert.ok(budget.bitrate > 1_000_000, `sender cap stayed at ${budget.bitrate}`);
-  assert.ok(budget.bitrate <= 1_300_000, `sender cap exceeded the browser estimate: ${budget.bitrate}`);
+test('a previously collapsed sender cap is reopened independently of the current estimate', () => {
+  const options=videoOptions({height:1080});
+  const budget=adaptBudget({bitrate:500_000,scale:1},{fps:29.3,available:1_300_000,limitation:'bandwidth'},options);
+  assert.equal(budget.bitrate,15_000_000); assert.equal(budget.scale,1);
 });
 
 test('clean network with available tracking actual send rate does not death-spiral and probes upward', () => {
   const options = videoOptions({ height: 1080, fps: 60 });
   let budget = newBudget(options);
-  assert.equal(budget.bitrate, 8_000_000);
+  assert.equal(budget.bitrate, 15_000_000);
   for (let i = 0; i < 9; i++) {
     budget = adaptBudget(budget, { fps: 60, loss: 0, rtt: 0.02, available: budget.bitrate * 1.05, encodeMs: 3 }, options);
   }
@@ -100,15 +113,12 @@ test('clean network with available tracking actual send rate does not death-spir
   assert.equal(budget.scale, 1);
 });
 
-test('resolution scale recovers smoothly back to 1.0 after transient packet loss', () => {
-  const options = videoOptions({ height: 1080, fps: 60 });
-  let budget = { bitrate: 8_000_000, good: 0, scale: 1, reason: '' };
-  budget = adaptBudget(budget, { fps: 60, loss: 0.08, rtt: 0.1, available: 6e6, encodeMs: 3 }, options);
-  assert.ok(budget.scale < 1, 'scale should drop on loss');
-  for (let i = 0; i < 8; i++) {
-    budget = adaptBudget(budget, { fps: 60, loss: 0, rtt: 0.02, available: 10e6, encodeMs: 3 }, options);
+test('transient packet loss cannot trigger application resolution switching', () => {
+  const options=videoOptions({height:1080,fps:60}); let budget=newBudget(options);
+  for(const loss of [.08,0,.08,0]) {
+    budget=adaptBudget(budget,{fps:60,loss,rtt:.1,available:6e6},options);
+    assert.equal(budget.scale,1);
   }
-  assert.equal(budget.scale, 1, `scale should recover back to 1, got ${budget.scale}`);
 });
 
 test('telemetry reports measured RTP bitrate and frame deltas', () => {
@@ -158,16 +168,10 @@ test('suspended state preserves budget and avoids degradation during background 
   assert.equal(budget.bitrate, 6_000_000, 'bitrate must not collapse during background suspension');
 });
 
-test('resolution scale requires consecutive confirmation windows before recovery', () => {
-  const options = videoOptions({ height: 1080, fps: 60 });
-  let budget = { bitrate: 4_000_000, good: 0, scale: 0.8, reason: '' };
-  const cleanSample = { fps: 60, loss: 0, rtt: 0.02, available: 8e6, encodeMs: 3 };
-  budget = adaptBudget(budget, cleanSample, options);
-  assert.equal(budget.scale, 0.8, 'scale should not jump on first sample');
-  budget = adaptBudget(budget, cleanSample, options);
-  assert.equal(budget.scale, 0.8, 'scale should still hold on second sample');
-  budget = adaptBudget(budget, cleanSample, options);
-  assert.ok(budget.scale > 0.8, `scale should step up after 3 confirmed samples, got ${budget.scale}`);
+test('a legacy reduced resolution is reset to the selected size rather than repeatedly probing', () => {
+  const options=videoOptions({height:1080,fps:60});
+  const budget=adaptBudget({bitrate:4e6,scale:.8},{fps:60,loss:0,rtt:.02,available:8e6},options);
+  assert.equal(budget.scale,1); assert.equal(budget.bitrate,15e6);
 });
 
 test('minBitrate provides appropriate floors across resolutions and framerates', () => {
@@ -181,7 +185,7 @@ test('minBitrate provides appropriate floors across resolutions and framerates',
 test('idle screen with low outgoing traffic does not trigger false congestion or collapse bitrate', () => {
   const options = videoOptions({ height: 1080, fps: 60 });
   let budget = newBudget(options);
-  assert.equal(budget.bitrate, 8_000_000);
+  assert.equal(budget.bitrate, 15_000_000);
 
   // Simulate an idle static desktop where outgoing traffic is only 300k,
   // GCC bandwidth estimate drops to 1.2M, but loss is 0 and RTT is low.
@@ -193,7 +197,7 @@ test('idle screen with low outgoing traffic does not trigger false congestion or
   }
 
   // Bitrate must not collapse to 500k; it should stay at base budget
-  assert.equal(budget.bitrate, 8_000_000);
+  assert.equal(budget.bitrate, 15_000_000);
   assert.equal(budget.scale, 1);
 });
 

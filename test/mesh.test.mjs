@@ -23,7 +23,7 @@ test('a transient recovery does not suppress the next ICE restart timer', () => 
   } finally { globalThis.RTCPeerConnection = original.pc; globalThis.setTimeout = original.set; globalThis.clearTimeout = original.clear; }
 });
 
-test('mesh applies a lower sender resolution after sustained capture-versus-encode frame loss', async () => {
+test('mesh keeps selected resolution after sustained capture-versus-encode frame loss', async () => {
   const original = globalThis.RTCPeerConnection;
   let sample = 0;
   const applied = [];
@@ -50,12 +50,12 @@ test('mesh applies a lower sender resolution after sustained capture-versus-enco
     const mesh = new Mesh({ id: 'a', iceServers: [], send() {}, onStatus() {}, onTrack() {}, onError() {}, refreshIce: async () => [] });
     mesh.ensure('b', 'epoch');
     await mesh.configureVideo({ height: 1080, fps: 60, adaptive: false });
-    // A selected 1080p ceiling must still downscale a 720p source under pressure.
+    // Frame pressure must not introduce a second resolution controller.
     await mesh.setTrack(1, { getSettings: () => ({ width: 1280, height: 720 }) });
     await mesh.stats();
     await mesh.stats();
     await mesh.stats();
-    assert.ok(applied.at(-1).scaleResolutionDownBy > 1, `sender scale was ${applied.at(-1).scaleResolutionDownBy}`);
+    assert.equal(applied.at(-1).scaleResolutionDownBy, 1);
     assert.equal(applied.at(-1).maxFramerate, 60);
     mesh.close();
   } finally { globalThis.RTCPeerConnection = original; }
@@ -143,7 +143,7 @@ test('stats accurately detects Cloudflare TURN on receiver side with selected ca
 });
 
 
-test('stats detects P2P direct when host/srflx candidates connect without relay', async () => {
+test('Cloudflare STUN discovery is reported as P2P direct rather than TURN relay', async () => {
   const original = { pc: globalThis.RTCPeerConnection };
   const statuses = [];
   globalThis.RTCPeerConnection = class {
@@ -153,7 +153,7 @@ test('stats detects P2P direct when host/srflx candidates connect without relay'
     async getStats() {
       return new Map([
         ['pair-1', { type: 'candidate-pair', state: 'succeeded', nominated: true, localCandidateId: 'local-1', remoteCandidateId: 'remote-1' }],
-        ['local-1', { type: 'local-candidate', candidateType: 'host' }],
+        ['local-1', { type: 'local-candidate', candidateType: 'srflx', url: 'stun:stun.cloudflare.com:3478' }],
         ['remote-1', { type: 'remote-candidate', candidateType: 'host' }]
       ]);
     }

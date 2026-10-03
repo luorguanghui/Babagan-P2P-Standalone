@@ -3,6 +3,12 @@ const { NativeFrameParser } = require('./native-frame-protocol.cjs');
 
 const SOURCE_ID = /^screen:\d+:\d+$/;
 
+function validateOptions({ fps, height, audio }) {
+  if (![15, 30, 45, 50, 60].includes(fps)) throw new Error('invalid capture frame rate');
+  if (![720, 1080, 1440, 2160].includes(height)) throw new Error('invalid capture height');
+  if (typeof audio !== 'boolean') throw new Error('invalid capture audio option');
+}
+
 class NativeCaptureService {
   constructor({ helperPath, spawnProcess = spawn, sendEvent }) {
     this.helperPath = helperPath;
@@ -17,14 +23,29 @@ class NativeCaptureService {
     if (this.active) throw new Error('native capture already active');
     if (!selection || !SOURCE_ID.test(selection.id) || selection.kind !== 'screen' ||
         !selection.id.startsWith(`${selection.kind}:`)) throw new Error('invalid capture source');
-    if (![15, 30, 45, 50, 60].includes(fps)) throw new Error('invalid capture frame rate');
-    if (![720, 1080, 1440, 2160].includes(height)) throw new Error('invalid capture height');
-    if (typeof audio !== 'boolean') throw new Error('invalid capture audio option');
+    validateOptions({ fps, height, audio });
+    this.selection = selection;
+    this.options = { fps, height, audio };
     const token = ++this.token;
     this.active = true;
     this.restarts = 0;
     this.restartWindowAt = Date.now();
     this.spawnChild(selection, { fps, height, audio }, token);
+  }
+
+  configure({ fps = this.options?.fps, height = this.options?.height } = {}) {
+    if (!this.active) throw new Error('native capture is not active');
+    const options = { ...this.options, fps, height };
+    validateOptions(options);
+    if (fps === this.options.fps && height === this.options.height) return;
+    const token = ++this.token;
+    const child = this.child;
+    this.child = null;
+    if (child?.exitCode == null) child?.kill();
+    this.options = options;
+    this.restarts = 0;
+    this.restartWindowAt = Date.now();
+    this.spawnChild(this.selection, options, token);
   }
 
   spawnChild(selection, { fps, height, audio }, token) {

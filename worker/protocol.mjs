@@ -6,7 +6,24 @@ export function cleanName(value) {
 export function validateMessage(value) {
   if (!value || typeof value !== 'object') throw new Error('无效消息');
   const { type } = value;
-  if (['ping', 'renew', 'share-start', 'share-stop', 'leave', 'end'].includes(type)) return { type };
+  if (type === 'share-start') {
+    if (value.sfu && typeof value.sfu === 'object') {
+      const { sessionId, videoTrackName, audioTrackName } = value.sfu;
+      if (typeof sessionId === 'string' && sessionId.length <= 128 &&
+          typeof videoTrackName === 'string' && videoTrackName.length <= 128) {
+        return {
+          type,
+          sfu: {
+            sessionId,
+            videoTrackName,
+            audioTrackName: typeof audioTrackName === 'string' && audioTrackName.length <= 128 ? audioTrackName : null
+          }
+        };
+      }
+    }
+    return { type };
+  }
+  if (['ping', 'renew', 'share-stop', 'leave', 'end'].includes(type)) return { type };
   if (type === 'mute' && typeof value.muted === 'boolean') return { type, muted: value.muted };
   if (type === 'grant-share' && typeof value.target === 'string' && value.target.length <= 64 && typeof value.canShare === 'boolean') return { type, target: value.target, canShare: value.canShare };
   if (type !== 'signal' || typeof value.to !== 'string' || value.to.length > 64) throw new Error('无效信令');

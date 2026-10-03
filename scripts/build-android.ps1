@@ -1,6 +1,8 @@
 param(
   [string]$SdkRoot = "$env:USERPROFILE/.cache/babagan-build/android-sdk",
-  [string]$JavaRoot = 'C:/JAVA'
+  [string]$JavaRoot = 'C:/JAVA',
+  [string]$OutputPath = '',
+  [string]$SigningDirectory = ''
 )
 $ErrorActionPreference = 'Stop'
 $projectRoot = (Resolve-Path "$PSScriptRoot/..").Path
@@ -26,11 +28,17 @@ try {
   Check-Result
   & "$toolsRoot/zipalign.exe" -f 4 "$buildRoot/unsigned.apk" "$buildRoot/aligned.apk"
   Check-Result
-  $signingRoot = Join-Path $env:LOCALAPPDATA 'Babagan/signing'
-  New-Item -ItemType Directory -Force $signingRoot | Out-Null
-  & icacls.exe $signingRoot /inheritance:r /grant:r "${env:USERNAME}:(OI)(CI)F" | Out-Null
+  $signingRoot = if ($SigningDirectory) { (Resolve-Path -LiteralPath $SigningDirectory).Path }
+    else { Join-Path $env:LOCALAPPDATA 'Babagan/signing' }
+  if (!$SigningDirectory) {
+    New-Item -ItemType Directory -Force $signingRoot | Out-Null
+    & icacls.exe $signingRoot /inheritance:r /grant:r "${env:USERNAME}:(OI)(CI)F" | Out-Null
+  }
   $passFile = Join-Path $signingRoot 'store-password.txt'
   $keyFile = Join-Path $signingRoot 'babagan-release.p12'
+  if ($SigningDirectory -and (!(Test-Path -LiteralPath $keyFile) -or !(Test-Path -LiteralPath $passFile))) {
+    throw 'Selected signing directory must contain the existing key and password file'
+  }
   if (!(Test-Path $keyFile)) {
     if (!(Test-Path $passFile)) {
       $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
@@ -46,12 +54,16 @@ try {
   $packageInfo = Get-Content package.json -Raw | ConvertFrom-Json
   $releaseVersion = if ($packageInfo.displayVersion) { $packageInfo.displayVersion } else { $packageInfo.version }
   $relApk = "releases/Babagan-P2P-$releaseVersion-Android.apk"
-  $apkFile = [IO.Path]::GetFullPath((Join-Path $projectRoot $relApk))
+  $apkFile = if ($OutputPath) {
+    if ([IO.Path]::IsPathRooted($OutputPath)) { [IO.Path]::GetFullPath($OutputPath) }
+    else { [IO.Path]::GetFullPath((Join-Path $projectRoot $OutputPath)) }
+  } else { [IO.Path]::GetFullPath((Join-Path $projectRoot $relApk)) }
+  New-Item -ItemType Directory -Force (Split-Path -Parent $apkFile) | Out-Null
   & "$toolsRoot/apksigner.bat" sign --ks $keyFile --ks-key-alias babagan --ks-pass "file:$passFile" --out $apkFile "$buildRoot/aligned.apk"
   Check-Result
   & "$toolsRoot/apksigner.bat" verify --verbose $apkFile
   Check-Result
-  & "$toolsRoot/aapt.exe" dump badging $relApk
+  & "$toolsRoot/aapt.exe" dump badging $apkFile
   Check-Result
   $stream = [IO.File]::OpenRead($apkFile)
   try {

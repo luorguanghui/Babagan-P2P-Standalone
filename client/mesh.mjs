@@ -1,6 +1,6 @@
 // Each connection reserves microphone, screen video and system audio slots.
 // Keeping transceiver order fixed lets screen/mic replacement avoid renegotiation.
-import { videoOptions, newBudget, adaptBudget, evenResolutionScale, videoSample, selectedCandidatePair, equalEstimatedBandwidthShare, qualityLimits } from './video-quality.mjs';
+import { videoOptions, newBudget, adaptBudget, evenResolutionScale, videoSample, selectedCandidatePair, qualityLimits } from './video-quality.mjs';
 import { preferH264, preferredVideoCodecs, tuneVideoSdp } from './video-codec.mjs';
 import { tuneOpusSdp } from './audio-processor.mjs';
 
@@ -123,12 +123,12 @@ export class Mesh {
     const limits = qualityLimits(options);
     const sourceHeight = settings.height || selectedHeight;
     const rawScale = evenResolutionScale(settings.width, settings.height,
-      Math.min(Math.min(selectedHeight, sourceHeight) * peer.budget.scale, limits.maxHeight));
+      Math.min(selectedHeight, sourceHeight, limits.maxHeight));
     const scale = rawScale;
     const bitrate = Math.min(peer.budget.bitrate, limits.maxBitrate);
-    const signature = `${bitrate}/${scale}/${this.video.fps}/${this.video.degradationPreference || 'maintain-resolution'}`;
+    const signature = `${bitrate}/${scale}/${this.video.fps}/maintain-resolution`;
     if (peer.applied === signature) return;
-    params.degradationPreference = this.video.degradationPreference || 'maintain-resolution';
+    params.degradationPreference = 'maintain-resolution';
     params.encodings[0].active = bitrate > 0;
     if (bitrate > 0) params.encodings[0].maxBitrate = bitrate;
     params.encodings[0].maxFramerate = this.video.fps;
@@ -161,19 +161,18 @@ export class Mesh {
         remote?.candidateType === 'relay' ||
         local?.relayProtocol ||
         remote?.relayProtocol ||
-        (typeof local?.url === 'string' && (local.url.includes('turn:') || local.url.includes('cloudflare.com'))) ||
-        (typeof remote?.url === 'string' && (remote.url.includes('turn:') || remote.url.includes('cloudflare.com')))
+        (typeof local?.url === 'string' && /^turns?:/i.test(local.url)) ||
+        (typeof remote?.url === 'string' && /^turns?:/i.test(remote.url))
       );
       const connectionPath = isRelay ? 'Cloudflare TURN' : (local && remote ? 'P2P 直连' : null);
       this.onStatus(id, connectionPath || '路径待确认');
       metrics.push({ id, ...sample, path: connectionPath || '连接中', budget: { ...peer.budget } });
     }
     if (this.tracks[1]) {
-      const fairShare = equalEstimatedBandwidthShare(metrics.map(metric => metric.available));
       for (const metric of metrics) {
         const peer = this.peers.get(metric.id);
         if (!peer) continue;
-        peer.budget = adaptBudget(peer.budget, { ...peer.sample, fairShare, suspended: this.suspended }, this.effectiveVideo());
+        peer.budget = adaptBudget(peer.budget, { ...peer.sample, suspended: this.suspended }, this.effectiveVideo());
         try { await this.applyVideo(peer); }
         catch (e) { peer.budget.reason = '画质参数暂未生效'; this.onError(e); }
         metric.budget = { ...peer.budget };

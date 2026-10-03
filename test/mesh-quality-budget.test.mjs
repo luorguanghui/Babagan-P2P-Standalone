@@ -12,7 +12,7 @@ test('mesh configures every viewer independently without a room-wide upload cap'
 
   await mesh.configureVideo({ height: 1080, fps: 60, adaptive: true });
 
-  assert.deepEqual(applied, [8_000_000, 8_000_000, 8_000_000]);
+  assert.deepEqual(applied, [15_000_000, 15_000_000, 15_000_000]);
 });
 
 test('sender parameters enforce the selected tier maximum even across asynchronous quality changes', async () => {
@@ -24,7 +24,7 @@ test('sender parameters enforce the selected tier maximum even across asynchrono
     slots: [null, { sender: { getParameters: () => ({ encodings: [{}] }), setParameters: async params => { encoding = params.encodings[0]; degradation = params.degradationPreference; } } }] };
   await mesh.applyVideo(peer);
   assert.equal(encoding.maxBitrate, 15_000_000);
-  assert.equal(Math.round(2160 / encoding.scaleResolutionDownBy), 1440);
+  assert.equal(Math.round(2160 / encoding.scaleResolutionDownBy), 1080);
   assert.equal(degradation, 'maintain-resolution');
 });
 

@@ -17,17 +17,23 @@ export function minBitrate(options = {}) {
 }
 export function qualityLimits(options) {
   const height = Number(options.height) || 1080;
-  const tier = height <= 720 ? { maxHeight: 1080, maxBitrate: 10_000_000 }
-    : height <= 1080 ? { maxHeight: 1440, maxBitrate: 15_000_000 }
-      : height <= 1440 ? { maxHeight: 2160, maxBitrate: 20_000_000 }
+  const tier = height <= 720 ? { maxHeight: 720, maxBitrate: 10_000_000 }
+    : height <= 1080 ? { maxHeight: 1080, maxBitrate: 15_000_000 }
+      : height <= 1440 ? { maxHeight: 1440, maxBitrate: 20_000_000 }
         : { maxHeight: 2160, maxBitrate: 30_000_000 };
-  return options.sourceMode ? { ...tier, maxHeight: height } : tier;
+  return { ...tier, maxHeight: height };
 }
 export function equalEstimatedBandwidthShare(availableBps) {
   if (!availableBps.length || availableBps.some(value => !Number.isFinite(value) || value <= 0)) return null;
   return Math.floor(availableBps.reduce((total, value) => total + value, 0) / availableBps.length);
 }
-export function newBudget(options) { return { bitrate: Math.min(baseBitrate(options), qualityLimits(options).maxBitrate), good: 0, scale: 1, framePressure: 0, reason: '基准画质' }; }
+// maxBitrate is a ceiling, not a requested sending rate. GCC controls the actual
+// traffic and needs a stable ceiling to probe after idle periods or congestion.
+export function newBudget(options) {
+  return { bitrate: options.adaptive ? qualityLimits(options).maxBitrate
+    : Math.min(baseBitrate(options), qualityLimits(options).maxBitrate),
+    good: 0, scale: 1, framePressure: 0, reason: options.adaptive ? '浏览器自适应码率，保持分辨率' : '固定画质上限' };
+}
 // No artificial upscaling: a uniform sender scale preserves all source ratios.
 export function resolutionScale(width, height, targetHeight) {
   if (!(width > 0 && height > 0)) return 1;
@@ -61,115 +67,13 @@ export function adaptBudget(previous, sample, options) {
   if (options.suspended || sample.suspended) {
     return { ...previous, good: 0, reason: '后台挂起，维持当前画质' };
   }
-  const limits = qualityLimits(options);
-  const base = Math.min(baseBitrate(options), limits.maxBitrate), cap = limits.maxBitrate;
-  const selectedHeight = Number(options.height) || 1080;
-  const maxScale = Math.max(1, limits.maxHeight / selectedHeight);
-  const next = { ...previous };
-  // A low encoded FPS is actionable only when the capture source is still
-  // producing frames. An unchanged desktop can legitimately emit fewer frames.
-  const activeSource = sample.sourceFps != null && sample.sourceFps >= options.fps * 0.8;
-  const framePressure = activeSource && sample.fps != null &&
-    sample.fps < Math.min(options.fps * 0.75, sample.sourceFps * 0.8);
-  next.framePressure = framePressure ? (previous.framePressure || 0) + 1 : 0;
-  if (!options.adaptive) {
-    next.bitrate = base;
-    next.good = 0;
-    next.reason = '固定画质上限';
-    if (next.framePressure >= 2) {
-      const minScale = options.degradationPreference === 'maintain-resolution' ? 0.67 : 0.5;
-      next.scale = Math.max(minScale, Number((previous.scale / 1.2).toFixed(2)));
-      next.framePressure = 0;
-      next.reason = '编码帧率不足，降分辨率保流畅';
-    } else if (activeSource && sample.fps >= options.fps * 0.9 && previous.scale < 1) {
-      next.good = (previous.good || 0) + 1;
-      if (next.good >= 6) {
-        next.scale = Math.min(1, Number((previous.scale * 1.1).toFixed(2)));
-        if (next.scale >= 0.95) next.scale = 1;
-        next.good = 0;
-        next.reason = '帧率稳定，恢复分辨率';
-      }
-    }
-    next.scale = Math.min(1, next.scale);
-    return next;
-  }
-
-  const available = Number.isFinite(sample.available) && sample.available > 0 ? sample.available : null;
-  const lossCongested = sample.loss != null && sample.loss > 0.03;
-  const rttCongested = sample.rtt != null && sample.rtt > 0.35;
-  const bweLimited = sample.limitation === 'bandwidth' && available != null && available < previous.bitrate * 0.85;
-  const wasSaturating = sample.outgoing == null || sample.outgoing > (available || previous.bitrate) * 0.6;
-  const bweDropCongested = wasSaturating && available != null && available < previous.bitrate * 0.65;
-  const congested = lossCongested || rttCongested || bweLimited || bweDropCongested;
-  const cpu = sample.limitation === 'cpu' || (sample.encodeMs != null && sample.encodeMs > 1000 / options.fps * 0.8);
-
-  if (congested || cpu) {
-    next.good = 0;
-    if (cpu || (sample.loss != null && sample.loss > 0.05) || (sample.rtt != null && sample.rtt > 0.4)) {
-      next.scale = Math.max(0.5, Number((previous.scale / 1.2).toFixed(2)));
-    }
-    const targetDown = available ? Math.min(previous.bitrate * 0.8, available * 0.9) : previous.bitrate * 0.75;
-    const baseFloor = minBitrate(options);
-    const effectiveFloor = available != null ? Math.min(baseFloor, Math.max(500_000, Math.round(available * 0.85))) : baseFloor;
-    next.bitrate = Math.max(effectiveFloor, Math.round(targetDown));
-    next.reason = cpu ? '编码负载较高，优先保帧率' : '网络拥塞，降低码率保流畅';
-  } else {
-    const safe = sample.loss == null || sample.loss < 0.015;
-    const lowRtt = sample.rtt == null || sample.rtt < 0.25;
-    const notCpu = !cpu && sample.limitation !== 'cpu';
-    const active = sample.fps != null && sample.fps >= options.fps * 0.85;
-    const headroom = available == null || available >= previous.bitrate * 0.95;
-
-    if (previous.bitrate < base && safe && lowRtt && notCpu) {
-      const ceiling = available != null && available < base ? available : base;
-      const step = available != null && available < base
-        ? Math.min(ceiling, Math.max(previous.bitrate * 1.15, available * 0.9))
-        : Math.min(base, Math.max(previous.bitrate * 1.25, previous.bitrate + 250_000));
-      next.bitrate = Math.round(Math.min(ceiling, step));
-      next.good = (previous.good || 0) + 1;
-      next.reason = '网络平稳，恢复码率';
-      if (next.good >= 3 && next.scale < 1) {
-        next.scale = Math.min(1, Number((previous.scale * 1.15).toFixed(2)));
-        if (next.scale >= 0.95) next.scale = 1;
-        next.good = 0;
-        next.reason = '网络平稳，恢复分辨率';
-      }
-    } else {
-      const healthy = active && headroom && safe && lowRtt && notCpu;
-      next.good = healthy ? previous.good + 1 : 0;
-    }
-
-    if (next.good >= 3) {
-      next.good = 0;
-      const fairProbe = Number.isFinite(sample.fairShare) && sample.fairShare > 0
-        ? Math.min(sample.fairShare, previous.bitrate * 1.25) : 0;
-      const probeBitrate = Math.round(Math.max(previous.bitrate * 1.15, fairProbe));
-      const ceiling = available != null ? Math.max(available * 0.95, probeBitrate) : probeBitrate;
-      next.bitrate = Math.min(cap, ceiling);
-      next.reason = '稳定运行，逐步上探码率';
-
-      if (active && next.bitrate >= base * 1.4 && (available == null || available > base * 1.6)) {
-        next.scale = Math.min(1.5, Number((previous.scale * 1.1).toFixed(2)));
-        next.reason = '帧率稳定，提升源像素细节';
-      } else if (next.scale < 1) {
-        next.scale = Math.min(1, Number((previous.scale * 1.15).toFixed(2)));
-        if (next.scale >= 0.95) next.scale = 1;
-        next.reason = '网络平稳，恢复分辨率';
-      }
-    } else if (next.reason !== '网络平稳，恢复码率') {
-      next.reason = !active ? '观察帧率（静态画面可能低帧率）' : '观察网络';
-    }
-  }
-
-  next.bitrate = Math.round(Math.min(cap, next.bitrate));
-  if (next.framePressure >= 2 && !cpu && !(sample.loss != null && sample.loss > 0.05) && !(sample.rtt != null && sample.rtt > 0.4)) {
-    const minScale = options.degradationPreference === 'maintain-resolution' ? 0.67 : 0.5;
-    next.scale = Math.max(minScale, Number((next.scale / 1.2).toFixed(2)));
-    next.framePressure = 0;
-    next.good = 0;
-    next.reason = '编码帧率不足，降分辨率保流畅';
-  }
-  next.scale = Math.min(maxScale, next.scale);
+  // Do not feed availableOutgoingBitrate back into maxBitrate. It is GCC's
+  // estimate, not an independent measurement of physical link capacity. A
+  // second controller can trap GCC at its own low estimate and resize on every
+  // sample. maintain-resolution lets GCC reduce bitrate/FPS under pressure.
+  const next = newBudget(options);
+  if (sample.limitation === 'cpu') next.reason = '编码负载较高，浏览器调整帧率';
+  else if (sample.limitation === 'bandwidth') next.reason = '浏览器控制拥塞，保留带宽恢复空间';
   return next;
 }
 export function selectedCandidatePair(reports) {

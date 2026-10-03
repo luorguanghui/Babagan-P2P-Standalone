@@ -1,9 +1,25 @@
-// Prefer H.264 for screen sharing: Chromium can use the Windows video encoder
-// accelerator for it, while retaining every other codec for interoperability.
-export function preferH264(transceiver, codecs) {
+// Prefer H.264 for screen sharing. SFU uses ordinary Main/Baseline profiles
+// for Windows hardware encoding, keeping Main's compression efficiency.
+export function preferH264(transceiver, codecs, { hardware = false, preferredProfile = 'high' } = {}) {
   if (typeof transceiver?.setCodecPreferences !== 'function' || !Array.isArray(codecs)) return false;
   const h264 = codecs.filter(codec => codec.mimeType?.toLowerCase() === 'video/h264');
   if (!h264.length) return false;
+  if (hardware) {
+    // Constrained Baseline (42e0) can fall back to software on NVIDIA. Both
+    // ordinary Main and Baseline activate NVENC in the Windows runtime probe.
+    const ordinary = prefix => h264.filter(codec => new RegExp(`(?:^|;)\\s*profile-level-id=${prefix}[\\da-f]{2}(?:;|$)`, 'i').test(codec.sdpFmtpLine || '') &&
+      /(?:^|;)\s*packetization-mode=1(?:;|$)/i.test(codec.sdpFmtpLine || ''));
+    const profiles = [...ordinary('4d00'), ...ordinary('4200')];
+    if (profiles.length) {
+      try {
+        transceiver.setCodecPreferences([
+          ...profiles,
+          ...codecs.filter(codec => codec.mimeType?.toLowerCase() === 'video/rtx')
+        ]);
+        return true;
+      } catch { /* use the interoperable preference below */ }
+    }
+  }
   const sortedH264 = [...h264].sort((a, b) => {
     const score = codec => {
       const fmtp = codec.sdpFmtpLine || '';
@@ -11,6 +27,7 @@ export function preferH264(transceiver, codecs) {
       if (/packetization-mode=1/i.test(fmtp)) s += 10;
       if (/profile-level-id=64/i.test(fmtp)) s += 20;
       else if (/profile-level-id=4d/i.test(fmtp)) s += 10;
+      if (preferredProfile === 'main' && /profile-level-id=4d/i.test(fmtp)) s += 30;
       return s;
     };
     return score(b) - score(a);

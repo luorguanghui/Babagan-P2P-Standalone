@@ -4,7 +4,60 @@ Windows EXE 与 Android APK 都内置界面资源。语音与屏幕共享采用 
 
 Cloudflare Worker `babagan-p2p` 已部署到 `https://p2p.babagan.cloud`，用于入会、信令和短期 TURN 凭据。应用已内置该地址，可在“连接设置”修改。不需要自行运行服务器，但开会仍需要互联网和 Cloudflare 服务。
 
-此公开项目按 GPLv2 提供源码；Windows 包内的 OBS 及相关组件源码、构建来源与许可说明见 [THIRD_PARTY_SOURCES.md](THIRD_PARTY_SOURCES.md)。1.13 的 EXE/APK 和对应源码归档均放在 GitHub Release，旧版本安装包保留在本地 `releases` 目录。
+此公开项目按 GPLv2 提供源码；Windows 包内的 OBS 及相关组件源码、构建来源与许可说明见 [THIRD_PARTY_SOURCES.md](THIRD_PARTY_SOURCES.md)。本次 Windows EXE、Android APK、对应源码及校验文件见 [1.19 P2P 白闪修复 Release](https://github.com/luorguanghui/Babagan-P2P-Standalone/releases/tag/v1.19-p2p-flicker-fix)。旧安装包保留在本地 `releases` 目录。
+
+## 1.19 P2P 接收白闪修复（2026-10-03）
+
+修复缓冲或重载时误显示历史亮色截图的问题，并保留已准备好的过渡画面；系统音频晚到或被替换时不再重载同一视频流。Windows 与 Android 包包含相同的播放修复，Android 签名与上一版 SFU-FPS-Fix 相同。
+
+127 项单元测试和静态检查通过，旧包/新包真实播放器对照验证通过，新 Windows 包经真实内置 OBS、P2P 丢包与断流恢复测试。Android 包签名、资源一致性及对齐验证通过；未进行安卓真机测试。原现场是否还有其他白闪原因仍需同场景复测。详细依据见 [诊断与验证记录](docs/acceptance/standalone-p2p-white-flash-fix-2026-10-03.md)。
+
+## 1.19 SFU 动态帧率优化与诊断包（2026-10-02）
+
+新的 Windows EXE 和 Android APK 位于 `releases/sfu-fps-fix-2026-10-02`。SFU 优先 H.264 Main 硬件编码，接收统计区分到达、解码和丢弃帧率，并修复 Cloudflare STUN 直连被误标为 TURN 的问题。安卓与上一条 Quality-Fix APK 签名相同；实际手机的 60 fps 表现仍需复测。验证结果和使用说明见 [SFU 帧率诊断记录](docs/acceptance/standalone-sfu-fps-diagnosis-2026-10-02.md)。
+
+## 1.19 分辨率稳定与内置采集减负修复试用包（2026-10-02）
+
+Windows 修复包位于 `releases/quality-fix-2026-10-02/Babagan-P2P-1.19-Quality-Fix-Windows-x64.exe`。取消 P2P 与浏览器拥塞控制叠加的码率压降、自动分辨率升降，P2P/SFU 优先保持所选分辨率；正常播放不再周期截图，后台暂停本机预览，内置采集调档同步降低采集负载，并减少 VideoFrame 内存复制。实际显卡性能恢复幅度需要相同负载对照；测试结果和线上验证限制见 [验收记录](docs/acceptance/standalone-quality-gpu-fix-2026-10-02.md)。
+
+Android 修复包位于 `releases/quality-fix-2026-10-02/Babagan-P2P-1.19-Quality-Fix-Android.apk`，包含同一套客户端修复，支持 Android 8.0+。当前可用密钥与保留的旧 1.19 APK 签名不同，旧 1.19 需要先卸载再安装，卸载会清除本地设置；原 APK 已保留。
+
+## 1.19 SFU 硬件编码（NVENC）与黑屏重连修复
+
+1. **显卡硬件编码加速**：SFU 推流协商优化为优先普通 Baseline Profile，绕过 Chromium 在 Windows 下对 NVIDIA 显卡跳过 Constrained Baseline 编码器的限制，成功激活 NVENC 硬件编码，降低高负载下的编码延迟并稳定高帧率。提供“SFU 兼容编码模式”开关以备特殊环境回退。
+2. **画质与码率对齐**：SFU 模式支持按所选分辨率档位自动缩放发送源和配置码率上限，并在共享中实时生效。
+3. **黑屏恢复与订阅重建**：接收端订阅严格校验视频轨道与首帧解码到达，超时或异常时自动清空并重建订阅，解决偶发长时间黑屏问题。
+
+## 1.18 SFU 视频编解码与 P2P 对齐
+
+Android 录屏中的 SFU 视频曾短暂出现纯白帧，而 P2P 模式正常。真实 Cloudflare SFU 协商对照显示此前默认使用 VP8；本版让 SFU 推流与 P2P 一样优先 H.264，并在 SFU 统计中显示实际编解码格式，便于核验。
+
+## 1.17 SFU 分辨率切换黑闪修复
+
+根据 Android 录屏中视频区域短暂全黑、共享标识保持不变且画面高度同时变化的现象，SFU 推流端设置 `maintain-resolution`，避免带宽自适应时频繁改变编码分辨率；移动端共享画面区域固定高度，避免视频尺寸变化牵动页面布局。
+
+## 1.16 Android 视频海报闪屏修复
+
+1. Android WebView 不再使用灰底黑色播放按钮作为共享视频的默认海报；视频暂停或重新加载时保留上一帧，待新帧真正渲染后再移除。
+2. 正在播放的视频不再随连接统计刷新重复调用 `play()`；共享端信令短暂断开时，接收端保留仍在播放的 SFU 视频轨道并等待共享状态恢复。共享端主动停止共享时立即清空画面。
+
+## 1.15 接收画面闪屏修复与 SFU 链路统计
+
+1. 修复成员列表或连接统计刷新时，接收端反复将旧截图覆盖到正常播放的视频上造成的闪屏。只有真正等待新画面或恢复播放时才使用留存画面。
+2. SFU 模式直接读取其视频连接的 WebRTC 统计，显示分辨率、码率、帧率、丢包率和 RTT。发送端丢包率表示本机至 SFU，接收端表示 SFU 至本机。
+
+## 1.14 可选 Cloudflare SFU 云端分发屏幕共享与提示弹窗即时交互优化
+
+针对多人参会时显卡多路编码压力过高及提示弹窗常驻不消失的问题进行全面升级：
+1. **可选 Cloudflare SFU 云端分发（单路编码减负）**：
+   - 界面新增“Cloudflare SFU 云端分发”自主选择开关（记忆本地配置）。
+   - 勾选后，共享者本地显卡**仅需编码 1 路 60fps 视频流**推送到 Cloudflare Calls 边缘 SFU，再由 Cloudflare 遍布全球的高速骨干网向所有参会者扇出分发，彻底解放显卡多路硬件编码器（NVENC）负载与上传带宽瓶颈；
+   - 通话语音继续保持纯 P2P 直连，兼顾最低语音延迟与云端高清多播；
+   - 无论是否开启 SFU，均可在界面实时查看“☁️ Cloudflare SFU 云端分发”状态标识；若未勾选则保持纯 P2P 直连网状模式，灵活可控。
+2. **提示弹窗常驻不消失问题彻底修复**：
+   - 针对图中“点击‘播放声音’启用会议音频”等所有通知提示，统一配置 5~6 秒自动渐隐超时，不再永久占屏；
+   - 点击“播放声音”按钮时立即清除提示文本；
+   - 状态栏 `#status` 提示条增加点击关闭监听与鼠标指针悬停提示（`title="点击关闭提示"`），用户可随时直接点击提示框即刻将其关闭。
 
 ## 1.13 帧率多档位适配、系统音频回声抑制与主持人屏幕共享授权
 
@@ -58,8 +111,8 @@ Windows 增加“内置高帧率屏幕采集（实验）”，把精简 libobs �
 
 ## 使用
 
-1. Windows 10/11 x64：运行 `Babagan-P2P-1.13-Windows-x64.exe`，这是便携版，首次启动会解压运行文件。EXE 没有商业代码签名证书。
-2. Android 8.0 及以上：安装 `Babagan-P2P-1.13-Android.apk`，首次开麦时允许麦克风权限。APK 使用本机生成的发布密钥签名，依赖系统 Android WebView。1.0.5 及其后版本使用相同签名密钥，可覆盖升级。**当前目录内的 1.0.4 APK 使用另一签名证书，不能直接覆盖安装新版；请在会议结束后卸载 1.0.4，再安装 1.13，并重新填写名字等本地设置。**
+1. Windows 10/11 x64：运行 `Babagan-P2P-1.19-Windows-x64.exe`，这是便携版，首次启动会解压运行文件。EXE 没有商业代码签名证书。
+2. Android 8.0 及以上：安装 `Babagan-P2P-1.19-Android.apk`，首次开麦时允许麦克风权限。APK 使用本机密钥签名，依赖系统 Android WebView。**1.19 可覆盖本地 1.15~1.18；1.13/1.14 使用另一签名证书，须先卸载旧版再安装。卸载会清除应用本地设置，请先记下会议地址和名字。**
 3. 填写名字并“创建会议”，将“复制邀请”得到的链接发给其他人。对方在安装好的客户端粘贴邀请并加入。邀请链接不是网页会议入口。
 4. 每房最多 5 人。Windows 可选择共享屏幕/窗口或 OBS 虚拟摄像头；屏幕/窗口共享可选系统声音。Android 支持语音及观看，不支持发起屏幕共享。
 5. Android 当前应保持前台使用；切到后台会暂停麦克风，不承诺锁屏通话。语音默认开启回声消除。
@@ -91,9 +144,13 @@ pnpm exec wrangler login
 pnpm worker:deploy
 pnpm exec wrangler secret put TURN_KEY_ID --config worker/wrangler.jsonc
 pnpm exec wrangler secret put TURN_API_TOKEN --config worker/wrangler.jsonc
+pnpm exec wrangler secret put CALLS_APP_ID --config worker/wrangler.jsonc
+pnpm exec wrangler secret put CALLS_APP_TOKEN --config worker/wrangler.jsonc
 ```
 
 不要将长期密钥写进源码、`.env.example`、构建目录或客户端。Cloudflare 账号当前已配置两项 Secret，重复部署代码不需要重新创建 TURN 应用。
+
+SFU 代理只读取环境中的 `CALLS_APP_ID` 和 `CALLS_APP_TOKEN`，缺少任意一项时返回 503。发布源码已去除早期本地提交中的凭据回退；此次 GitHub 发布没有部署 Worker，也没有修改线上 Secret。当前 SFU 代理仍缺少会议成员鉴权，部署到公网前应补齐相应访问控制。
 
 ## 验证
 
